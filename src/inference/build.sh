@@ -64,7 +64,7 @@ if [ ! -d "../libtorch" ]; then
     unzip -q libtorch.zip
     rm libtorch.zip
 
-    cd gstreamer_plugin_c
+    cd inference
     echo -e "${GREEN}✓ LibTorch downloaded${NC}"
 else
     echo -e "${GREEN}✓ LibTorch found${NC}"

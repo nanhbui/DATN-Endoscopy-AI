@@ -20,8 +20,7 @@ echo "========================================="
 echo ""
 
 # Run capture system (disable GStreamer, use pure OpenCV + YOLO)
-cd phase_1
-python capture_system.py --angles 3 --no-gstreamer "$@"
+python src/backend/capture/capture_system.py --angles 3 --no-gstreamer "$@"
 
 # Deactivate on exit
 deactivate

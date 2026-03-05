@@ -11,12 +11,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-# Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent))
+# Add backend directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data_processor import DataProcessor
-from chatbot_rag import ProductRAGChatbot
-from pydantic_models import ProductRecord
+from rag.data_processor import DataProcessor
+from rag.chatbot_rag import ProductRAGChatbot
+from database.pydantic_models import ProductRecord
 
 # Load environment variables
 load_dotenv()

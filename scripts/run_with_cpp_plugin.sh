@@ -16,7 +16,7 @@ for arg in "$@"; do
 done
 
 # Set GST_PLUGIN_PATH to include our plugin
-export GST_PLUGIN_PATH="$(pwd)/gstreamer_plugin_c/build:$GST_PLUGIN_PATH"
+export GST_PLUGIN_PATH="$(pwd)/src/inference/build:$GST_PLUGIN_PATH"
 
 # Enable GstShark profiling if requested
 if [ "$PROFILING" = true ]; then
@@ -38,7 +38,7 @@ if gst-inspect-1.0 yoloinference > /dev/null 2>&1; then
     echo "✅ C++ YOLO plugin found"
 else
     echo "❌ Plugin not found!"
-    echo "Build first: cd gstreamer_plugin_c && ./build.sh"
+    echo "Build first: cd src/inference && ./build.sh"
     exit 1
 fi
 
@@ -61,8 +61,7 @@ echo "========================================="
 echo ""
 
 # Run capture system (will use GStreamer with C++ plugin)
-cd phase_1
-python capture_system.py --angles 3 "$@"
+python src/backend/capture/capture_system.py --angles 3 "$@"
 
 # Deactivate on exit
 deactivate
@@ -74,8 +73,7 @@ if [ "$PROFILING" = true ]; then
     echo "📊 Generating performance report..."
     echo "========================================="
 
-    cd ..
-    python generate_gstshark_report.py --log-dir gstshark_logs
+    python scripts/generate_gstshark_report.py --log-dir gstshark_logs
 
     echo ""
     echo "✅ Profiling complete!"

@@ -31,6 +31,9 @@ except ImportError:
 
 import os
 
+# Add capture package directory to path for module imports
+sys.path.insert(0, str(Path(__file__).parent))
+
 # Import GstShark profiler (optional)
 try:
     from modules.gstshark_profiler import GstSharkProfiler

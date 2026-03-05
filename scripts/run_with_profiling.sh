@@ -21,7 +21,7 @@ echo "  - GstShark profiling"
 echo "  - Real-time monitoring"
 echo ""
 
-python phase_1/capture_system.py --profiling "$@"
+python src/backend/capture/capture_system.py --profiling "$@"
 
 echo ""
 echo "📊 Performance logs saved to: captured_images/gstshark_logs/"

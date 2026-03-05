@@ -612,7 +612,7 @@ Be specific and descriptive. If information is not visible, use null for strings
 
                     angle_metadata = {
                         'angle_number': capture_data['angle_number'],
-                        'image_path': capture_data['image']['local_path'].replace('captured_images/', 'phase_1/captured_images/'),
+                        'image_path': capture_data['image']['local_path'],
                         'timestamp': capture_data['timestamp'],
                         'bbox': bbox,
                         'bbox_area': bbox_data['area_pixels'],

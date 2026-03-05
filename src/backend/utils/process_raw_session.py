@@ -7,11 +7,11 @@ import sys
 import os
 from pathlib import Path
 
-# Add phase_2 to path 
-sys.path.insert(0, str(Path(__file__).parent))
+# Add backend directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data_processor import DataProcessor
-from pydantic_models import AngleMetadata, BoundingBox, ProductRecord, MVVResult
+from rag.data_processor import DataProcessor
+from database.pydantic_models import AngleMetadata, BoundingBox, ProductRecord, MVVResult
 
 def process_raw_session_from_mongodb(session_id: str) -> bool:
     """
@@ -75,8 +75,6 @@ def process_raw_session_from_mongodb(session_id: str) -> bool:
             # Image path - adjust relative path
             image_info = capture_data.get('image', {})
             local_path = image_info.get('local_path', '')
-            if local_path and not local_path.startswith('phase_1/'):
-                local_path = f"phase_1/{local_path}"
             
             angle_metadata = {
                 'angle_number': capture_data.get('angle_number', int(angle_key)),
@@ -144,7 +142,7 @@ def process_raw_session_from_mongodb(session_id: str) -> bool:
         if captured_angles and captured_angles[0].image_path:
             output_directory = str(Path(captured_angles[0].image_path).parent)
         else:
-            output_directory = f"phase_1/captured_images/{session_id}"
+            output_directory = f"captured_images/{session_id}"
         
         # Create ProductRecord
         product_record = ProductRecord(

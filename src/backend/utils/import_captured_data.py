@@ -79,9 +79,9 @@ def main():
     
     # Look for captured_images directories
     search_paths = [
-        Path("phase_1/captured_images"),
         Path("captured_images"),
-        Path("./phase_1/captured_images"),
+        Path("captured_images"),
+        Path("./captured_images"),
         Path("./captured_images")
     ]
     

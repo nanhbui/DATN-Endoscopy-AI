@@ -359,8 +359,8 @@ def main():
     model_path = Path(args.model)
     
     if not model_path.exists():
-        # Try in phase_1 directory
-        alt_path = Path("phase_1") / args.model
+        # Try in models directory
+        alt_path = Path("models") / args.model
         if alt_path.exists():
             model_path = alt_path
         else:
