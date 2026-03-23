@@ -25,6 +25,12 @@ gstshark_logs/
 gstshark_*/
 test_output/
 
+# Datasets & outputs — quá lớn cho GitHub, lưu local
+data/raw/
+data/hyperkvasir_yolo/
+data/llava_finetune/
+outputs/
+
 # Temporary files
 *.log
 *.tmp
