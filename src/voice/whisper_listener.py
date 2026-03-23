@@ -24,9 +24,11 @@ class WhisperListener:
         language:   ngôn ngữ transcribe, mặc định "vi" (tiếng Việt)
     """
 
-    SAMPLE_RATE = 16000        # Hz — Whisper yêu cầu 16kHz
-    CHUNK_SIZE = 1024          # số sample mỗi lần đọc từ mic
-    SILENCE_THRESHOLD = 500    # ngưỡng RMS để phân biệt im lặng / giọng nói
+    SAMPLE_RATE = 44100        # Hz — dùng native rate của hardware, resample về 16kHz trước khi gửi Whisper
+    WHISPER_RATE = 16000       # Hz — Whisper yêu cầu 16kHz
+    CHANNELS = 2               # Stereo (hardware không hỗ trợ mono)
+    CHUNK_SIZE = 2048          # số sample mỗi lần đọc từ mic
+    SILENCE_THRESHOLD = 8000   # ngưỡng RMS để phân biệt im lặng / giọng nói (noise nền ~100)
     SILENCE_DURATION = 1.0     # giây im lặng liên tiếp → kết thúc đoạn nói
     MIN_SPEECH_DURATION = 0.3  # đoạn nói ngắn hơn giá trị này bị bỏ qua
 
@@ -92,7 +94,7 @@ class WhisperListener:
         pa = pyaudio.PyAudio()
         stream = pa.open(
             format=pyaudio.paInt16,
-            channels=1,
+            channels=self.CHANNELS,
             rate=self.SAMPLE_RATE,
             input=True,
             frames_per_buffer=self.CHUNK_SIZE,
@@ -111,28 +113,33 @@ class WhisperListener:
             while self._is_running:
                 raw = stream.read(self.CHUNK_SIZE, exception_on_overflow=False)
                 chunk = np.frombuffer(raw, dtype=np.int16)
+                # Stereo → mono bằng cách lấy trung bình 2 kênh
+                if self.CHANNELS == 2:
+                    chunk = chunk.reshape(-1, 2).mean(axis=1).astype(np.int16)
                 rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
+                print(f"[RMS] {rms:.0f}  {'█' * min(int(rms/1000), 30)}", end="\r")
+
                 if rms > self.SILENCE_THRESHOLD:
-                    # Phát hiện giọng nói
+                    if not is_speaking:
+                        print(f"\n[VAD] Bắt đầu nói (RMS={rms:.0f})")
                     is_speaking = True
                     silence_count = 0
                     speech_buffer.append(chunk)
 
                 elif is_speaking:
-                    # Đang trong đoạn nói nhưng chunk này im lặng
                     silence_count += 1
-                    speech_buffer.append(chunk)  # giữ lại để không bị cắt đột ngột
+                    speech_buffer.append(chunk)
 
                     if silence_count >= silence_chunks_threshold:
-                        # Đủ im lặng → kết thúc đoạn nói
                         audio = np.concatenate(speech_buffer)
                         duration = len(audio) / self.SAMPLE_RATE
+                        print(f"[VAD] Kết thúc nói — duration={duration:.2f}s")
 
                         if duration >= self.MIN_SPEECH_DURATION:
+                            print("[VAD] Gửi vào queue transcribe")
                             self._audio_queue.put(audio)
 
-                        # Reset
                         speech_buffer = []
                         silence_count = 0
                         is_speaking = False
@@ -156,17 +163,31 @@ class WhisperListener:
             except queue.Empty:
                 continue
 
+            # Resample từ 44100Hz → 16000Hz cho Whisper
+            import scipy.signal as sps
+            resample_ratio = self.WHISPER_RATE / self.SAMPLE_RATE
+            new_len = int(len(audio) * resample_ratio)
+            audio = sps.resample(audio, new_len).astype(np.int16)
+
             # Whisper cần float32 trong khoảng [-1, 1]
             audio_float = audio.astype(np.float32) / 32768.0
 
             # faster-whisper trả về (segments_generator, info)
-            segments, _ = self.model.transcribe(
+            segments, info = self.model.transcribe(
                 audio_float,
                 language=self.language,
-                beam_size=1,        # greedy decode → nhanh hơn cho lệnh ngắn
-                vad_filter=True,    # lọc thêm silence bằng VAD nội bộ
+                beam_size=1,                    # greedy decode → nhanh hơn cho lệnh ngắn
+                vad_filter=True,                # Silero VAD nội bộ — lọc noise/hallucination
+                condition_on_previous_text=False,  # không dùng context cũ → tránh hallucinate
+                initial_prompt=(                # bias model về lệnh nội soi
+                    "nhầm rồi bỏ qua sai không phải false positive "
+                    "giải thích phân tích chi tiết tại sao "
+                    "kiểm tra lại xem lại nhìn lại "
+                    "đúng rồi xác nhận chuẩn ok"
+                ),
             )
 
             text = " ".join(seg.text for seg in segments).strip()
+            print(f"[Whisper] Transcribe xong: '{text}'")
             if text and self.on_transcription:
                 self.on_transcription(text)

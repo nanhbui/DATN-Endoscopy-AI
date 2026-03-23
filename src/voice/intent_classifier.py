@@ -18,20 +18,20 @@ from typing import Tuple
 
 
 class VoiceIntent(Enum):
-    FALSE_POSITIVE = "false_positive"
-    EXPLAIN = "explain"
-    CHECK_AGAIN = "check_again"
-    CONFIRM = "confirm"
-    UNKNOWN = "unknown"
+    BO_QUA       = "bo_qua"         # Detect sai → bỏ qua frame (Idea 1)
+    GIAI_THICH   = "giai_thich"     # Giải thích thêm (Idea 2)
+    KIEM_TRA_LAI = "kiem_tra_lai"   # Phân tích lại frame
+    XAC_NHAN     = "xac_nhan"       # Xác nhận detect đúng
+    UNKNOWN      = "unknown"        # Không nhận ra
 
 
-# Nhãn tiếng Việt để hiển thị / log
+# Nhãn hiển thị / log
 INTENT_LABELS = {
-    VoiceIntent.FALSE_POSITIVE: "Bỏ qua (false positive)",
-    VoiceIntent.EXPLAIN: "Giải thích thêm",
-    VoiceIntent.CHECK_AGAIN: "Kiểm tra lại",
-    VoiceIntent.CONFIRM: "Xác nhận đúng",
-    VoiceIntent.UNKNOWN: "Không rõ",
+    VoiceIntent.BO_QUA:       "Bỏ qua (false positive)",
+    VoiceIntent.GIAI_THICH:   "Giải thích thêm",
+    VoiceIntent.KIEM_TRA_LAI: "Kiểm tra lại",
+    VoiceIntent.XAC_NHAN:     "Xác nhận đúng",
+    VoiceIntent.UNKNOWN:      "Không rõ",
 }
 
 
@@ -49,7 +49,7 @@ class IntentClassifier:
     # Bảng keyword cho từng intent.
     # Liệt kê từ cụ thể → chung để ưu tiên match dài trước.
     _PATTERNS: dict = {
-        VoiceIntent.FALSE_POSITIVE: [
+        VoiceIntent.BO_QUA: [
             # Câu dài / cụm từ đặc thù (ưu tiên cao)
             "bắt sai rồi",
             "nhận sai rồi",
@@ -71,7 +71,7 @@ class IntentClassifier:
             "bọt",
             "loáng",
         ],
-        VoiceIntent.EXPLAIN: [
+        VoiceIntent.GIAI_THICH: [
             "giải thích thêm",
             "nói thêm về",
             "chi tiết hơn",
@@ -79,16 +79,19 @@ class IntentClassifier:
             "thêm thông tin",
             "tại sao lại",
             "vì sao lại",
-            # 2 từ
+            "thêm thông tin",
+            # 2 từ — thêm biến thể Whisper hay transcribe nhầm
             "giải thích",
+            "thích thêm",   # Whisper đôi khi bỏ "giải"
             "phân tích",
             "nói thêm",
             "chi tiết",
+            "thêm nào",
             # 1 từ
             "tại sao",
             "vì sao",
         ],
-        VoiceIntent.CHECK_AGAIN: [
+        VoiceIntent.KIEM_TRA_LAI: [
             "kiểm tra lại",
             "phân tích lại",
             "đánh giá lại",
@@ -98,17 +101,18 @@ class IntentClassifier:
             # 2 từ
             "xem lại",
             "nhìn lại",
-            "xác nhận",
             # 1 từ
             "kiểm tra",
             "lại",
         ],
-        VoiceIntent.CONFIRM: [
+        VoiceIntent.XAC_NHAN: [
+            "xác nhận đúng",
             "đúng rồi",
             "chính xác",
             "lưu lại",
             "ghi nhận",
-            "xác nhận đúng",
+            # 2 từ
+            "xác nhận",
             # 1 từ
             "đúng",
             "chuẩn",

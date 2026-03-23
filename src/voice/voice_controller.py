@@ -64,7 +64,7 @@ class VoiceController:
 
         from .intent_classifier import INTENT_LABELS
         label = INTENT_LABELS[intent]
-        print(f"[Voice] '{text}'  →  {label}  (confidence: {confidence:.2f})")
+        print(f"[Voice] '{text}'  →  {label}  (conf: {confidence:.2f})")
 
         if intent == VoiceIntent.UNKNOWN:
             return
