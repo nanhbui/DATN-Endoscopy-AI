@@ -45,3 +45,5 @@ Thumbs.db
 *_backup*
 *.bak
 .env
+
+.claude
