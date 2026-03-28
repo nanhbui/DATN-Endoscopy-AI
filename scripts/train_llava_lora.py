@@ -95,9 +95,6 @@ class LLaVADataset(Dataset):
             text=prompt,
             images=image,
             return_tensors="pt",
-            max_length=self.max_length,
-            truncation=True,
-            padding="max_length",
         )
 
         input_ids = inputs["input_ids"].squeeze()
