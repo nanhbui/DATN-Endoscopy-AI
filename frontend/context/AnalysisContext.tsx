@@ -66,12 +66,22 @@ const AnalysisContext = createContext<AnalysisContextType | undefined>(undefined
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// daday.pt model outputs on 1920×1080 frames
+const FRAME_W = 1920;
+const FRAME_H = 1080;
+
 function toDetection(d: DetectionData): Detection {
   const [x1, y1, x2, y2] = d.lesion.bbox;
   return {
     label: d.lesion.label,
     confidence: d.lesion.confidence,
-    bbox: { x: x1, y: y1, width: x2 - x1, height: y2 - y1 },
+    // Convert pixel bbox → percentage for CSS overlay positioning
+    bbox: {
+      x: (x1 / FRAME_W) * 100,
+      y: (y1 / FRAME_H) * 100,
+      width: ((x2 - x1) / FRAME_W) * 100,
+      height: ((y2 - y1) / FRAME_H) * 100,
+    },
     timestamp: d.timestamp_ms / 1000,
     anatomicalLocation: d.location,
     frame_b64: d.frame_b64,

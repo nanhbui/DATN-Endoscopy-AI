@@ -9,11 +9,9 @@ import {
   FileVideo,
   Loader2,
   MicOff,
-  Pause,
   Play,
   Square,
   UploadCloud,
-  Waves,
   Zap,
 } from 'lucide-react';
 import { useAnalysis } from '@/context/AnalysisContext';
@@ -239,14 +237,12 @@ export default function Workspace() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   /** Upload to backend + connect WebSocket, keep local preview URL. */
   const handleFileSelected = useCallback(async (file: File) => {
     setVideoFile(file);
     setIsUploading(true);
-    setUploadError(null);
 
     // Local preview immediately — no waiting for server
     const localUrl = URL.createObjectURL(file);
@@ -258,7 +254,6 @@ export default function Workspace() {
     } catch (err) {
       // Server offline — FE still works with mock pipeline
       console.warn("[workspace] backend offline, using mock pipeline:", err);
-      setUploadError("Server offline — chạy mock pipeline.");
     } finally {
       setIsUploading(false);
     }
@@ -269,7 +264,6 @@ export default function Workspace() {
     setVideoFile(null);
     setVideoUrl(null);
     setIsUploading(false);
-    setUploadError(null);
     setIsPlaying(false);
   }, [videoUrl, setIsPlaying]);
 
@@ -481,12 +475,20 @@ export default function Workspace() {
                     <MuiButton
                       variant="contained"
                       fullWidth
-                      disabled={isUploading}
-                      onClick={() => (isPlaying ? setIsPlaying(false) : startMockAnalysis())}
-                      startIcon={isPlaying ? <Pause size={17} /> : <Play size={17} />}
+                      disabled={isUploading || pipelineState === 'EOS_SUMMARY'}
+                      onClick={() => {
+                        if (isConnected) {
+                          // Already connected: resume if paused, otherwise reconnect
+                          if (pipelineState === 'PAUSED_WAITING_INPUT') resumePlayback();
+                          else if (!isPlaying) startMockAnalysis();
+                        } else {
+                          startMockAnalysis();
+                        }
+                      }}
+                      startIcon={isPlaying ? <Play size={17} /> : <Play size={17} />}
                       sx={{ borderRadius: '10px', py: 1.25, fontWeight: 700, fontSize: '0.875rem' }}
                     >
-                      {isPlaying ? 'Tạm dừng' : isConnected ? 'Chạy AI (Live)' : 'Chạy Mock'}
+                      {isConnected ? 'AI Live' : 'Chạy Mock'}
                     </MuiButton>
                     <MuiButton
                       variant="outlined"
