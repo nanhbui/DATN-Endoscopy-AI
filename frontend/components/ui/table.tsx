@@ -1,116 +1,82 @@
-"use client"
+'use client';
 
-import * as React from "react"
+import React from 'react';
+import MuiTable from '@mui/material/Table';
+import TableContainer from '@mui/material/TableContainer';
+import MuiTableHead from '@mui/material/TableHead';
+import MuiTableBody from '@mui/material/TableBody';
+import MuiTableRow from '@mui/material/TableRow';
+import MuiTableCell from '@mui/material/TableCell';
+import MuiTableFooter from '@mui/material/TableFooter';
+import { styled } from '@mui/material/styles';
 
-import { cn } from "@/lib/utils"
+const StyledTable = styled(MuiTable)(({ theme }) => ({
+  '& thead': {
+    '& tr': {
+      borderBottom: `1px solid ${theme.palette.divider}`,
+    },
+  },
+}));
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
-  return (
-    <div
-      data-slot="table-container"
-      className="relative w-full overflow-x-auto"
-    >
-      <table
-        data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
-        {...props}
-      />
-    </div>
+const StyledTableRow = styled(MuiTableRow)(({ theme }) => ({
+  '&:hover': {
+    backgroundColor: theme.palette.action.hover,
+  },
+  '&:last-child td, &:last-child th': {
+    border: 0,
+  },
+}));
+
+const StyledTableCell = styled(MuiTableCell)(({ theme }) => ({
+  padding: theme.spacing(1),
+}));
+
+const StyledTableHead = styled(MuiTableCell)(({ theme }) => ({
+  fontWeight: 600,
+  backgroundColor: theme.palette.background.paper,
+  color: theme.palette.text.primary,
+}));
+
+export const Table = React.forwardRef<HTMLTableElement, React.ComponentProps<typeof MuiTable>>(
+  (props, ref) => (
+    <TableContainer>
+      <StyledTable ref={ref} {...props} />
+    </TableContainer>
   )
-}
+);
+Table.displayName = 'Table';
 
-function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
-  return (
-    <thead
-      data-slot="table-header"
-      className={cn("[&_tr]:border-b", className)}
-      {...props}
-    />
-  )
-}
+export const TableHeader = React.forwardRef<HTMLTableSectionElement, React.ComponentProps<typeof MuiTableHead>>(
+  (props, ref) => <MuiTableHead ref={ref} {...props} />
+);
+TableHeader.displayName = 'TableHeader';
 
-function TableBody({ className, ...props }: React.ComponentProps<"tbody">) {
-  return (
-    <tbody
-      data-slot="table-body"
-      className={cn("[&_tr:last-child]:border-0", className)}
-      {...props}
-    />
-  )
-}
+export const TableBody = React.forwardRef<HTMLTableSectionElement, React.ComponentProps<typeof MuiTableBody>>(
+  (props, ref) => <MuiTableBody ref={ref} {...props} />
+);
+TableBody.displayName = 'TableBody';
 
-function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
-  return (
-    <tfoot
-      data-slot="table-footer"
-      className={cn(
-        "border-t bg-muted/50 font-medium [&>tr]:last:border-b-0",
-        className
-      )}
-      {...props}
-    />
-  )
-}
+export const TableFooter = React.forwardRef<HTMLTableSectionElement, React.ComponentProps<typeof MuiTableFooter>>(
+  (props, ref) => <MuiTableFooter ref={ref} {...props} />
+);
+TableFooter.displayName = 'TableFooter';
 
-function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
-  return (
-    <tr
-      data-slot="table-row"
-      className={cn(
-        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted",
-        className
-      )}
-      {...props}
-    />
-  )
-}
+export const TableRow = React.forwardRef<HTMLTableRowElement, React.ComponentProps<typeof MuiTableRow>>(
+  (props, ref) => <StyledTableRow ref={ref} {...props} />
+);
+TableRow.displayName = 'TableRow';
 
-function TableHead({ className, ...props }: React.ComponentProps<"th">) {
-  return (
-    <th
-      data-slot="table-head"
-      className={cn(
-        "h-10 px-2 text-left align-middle font-medium whitespace-nowrap text-foreground [&:has([role=checkbox])]:pr-0",
-        className
-      )}
-      {...props}
-    />
-  )
-}
+export const TableHead = React.forwardRef<HTMLTableCellElement, React.ComponentProps<typeof MuiTableCell>>(
+  (props, ref) => <StyledTableHead ref={ref} variant="head" {...props} />
+);
+TableHead.displayName = 'TableHead';
 
-function TableCell({ className, ...props }: React.ComponentProps<"td">) {
-  return (
-    <td
-      data-slot="table-cell"
-      className={cn(
-        "p-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
-        className
-      )}
-      {...props}
-    />
-  )
-}
+export const TableCell = React.forwardRef<HTMLTableCellElement, React.ComponentProps<typeof MuiTableCell>>(
+  (props, ref) => <StyledTableCell ref={ref} {...props} />
+);
+TableCell.displayName = 'TableCell';
 
-function TableCaption({
-  className,
-  ...props
-}: React.ComponentProps<"caption">) {
-  return (
-    <caption
-      data-slot="table-caption"
-      className={cn("mt-4 text-sm text-muted-foreground", className)}
-      {...props}
-    />
-  )
-}
-
-export {
-  Table,
-  TableHeader,
-  TableBody,
-  TableFooter,
-  TableHead,
-  TableRow,
-  TableCell,
-  TableCaption,
-}
+export const TableCaption = React.forwardRef<HTMLTableCaptionElement, React.ComponentProps<'caption'>>(
+  (props, ref) => <caption ref={ref} style={{ marginTop: 16, fontSize: '0.875rem', color: 'rgba(0, 0, 0, 0.6)' }} {...props} />
+);
+TableCaption.displayName = 'TableCaption';

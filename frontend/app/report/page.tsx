@@ -1,11 +1,9 @@
-"use client";
+'use client';
 
-import { motion } from "framer-motion";
-import { CheckCircle2, Download, MapPinned, ScanSearch } from "lucide-react";
+import { motion as framMotion } from 'framer-motion';
+import { CheckCircle2, Download, FileText, MapPin, ScanSearch, Sparkles } from 'lucide-react';
+import { useAnalysis } from '@/context/AnalysisContext';
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -14,166 +12,390 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useAnalysis } from "@/context/AnalysisContext";
+} from '@/components/ui/dialog';
+
+import Box from '@mui/material/Box';
+import Container from '@mui/material/Container';
+import Typography from '@mui/material/Typography';
+import Grid from '@mui/material/Grid';
+import MuiButton from '@mui/material/Button';
 
 const reportItems = [
   {
     id: 1,
-    label: "Viêm loét",
-    location: "Dạ dày - thân vị",
-    coordinate: "x:29 y:34 w:23 h:19",
+    label: 'Viêm loét',
+    location: 'Dạ dày - thân vị',
+    coordinate: 'x:29 y:34 w:23 h:19',
+    severity: 'high',
     checklist: [
-      "Bờ viền tổn thương không đều",
-      "Vùng sung huyết xung quanh",
-      "Khuyến nghị đánh giá H. pylori",
+      'Bờ viền tổn thương không đều',
+      'Vùng sung huyết xung quanh',
+      'Khuyến nghị đánh giá H. pylori',
     ],
+    gradient: 'linear-gradient(135deg, rgba(0,64,68,0.18) 0%, rgba(0,131,143,0.28) 100%)',
+    accentColor: '#006064',
+    accentBg: 'rgba(0,96,100,0.08)',
   },
   {
     id: 2,
-    label: "Xung huyết niêm mạc",
-    location: "Hang vị",
-    coordinate: "x:40 y:42 w:20 h:16",
+    label: 'Xung huyết niêm mạc',
+    location: 'Hang vị',
+    coordinate: 'x:40 y:42 w:20 h:16',
+    severity: 'medium',
     checklist: [
-      "Mức độ xung huyết trung bình",
-      "Cần đối chiếu bệnh sử thuốc NSAID",
-      "Hẹn nội soi tái khám nếu triệu chứng tồn tại",
+      'Mức độ xung huyết trung bình',
+      'Cần đối chiếu bệnh sử thuốc NSAID',
+      'Hẹn nội soi tái khám nếu triệu chứng tồn tại',
     ],
+    gradient: 'linear-gradient(135deg, rgba(2,87,137,0.15) 0%, rgba(2,136,209,0.25) 100%)',
+    accentColor: '#0277BD',
+    accentBg: 'rgba(2,119,189,0.08)',
   },
   {
     id: 3,
-    label: "Nốt trợt niêm mạc",
-    location: "Hành tá tràng",
-    coordinate: "x:58 y:36 w:18 h:14",
+    label: 'Nốt trợt niêm mạc',
+    location: 'Hành tá tràng',
+    coordinate: 'x:58 y:36 w:18 h:14',
+    severity: 'low',
     checklist: [
-      "Tổn thương nông, ranh giới rõ",
-      "Theo dõi tiến triển sau 2-4 tuần",
-      "Cân nhắc tối ưu phác đồ bảo vệ niêm mạc",
+      'Tổn thương nông, ranh giới rõ',
+      'Theo dõi tiến triển sau 2–4 tuần',
+      'Cân nhắc tối ưu phác đồ bảo vệ niêm mạc',
     ],
+    gradient: 'linear-gradient(135deg, rgba(120,53,15,0.12) 0%, rgba(245,158,11,0.22) 100%)',
+    accentColor: '#D97706',
+    accentBg: 'rgba(245,158,11,0.08)',
   },
 ];
+
+const severityMap: Record<string, { label: string; color: string; bg: string }> = {
+  high: { label: 'Nghiêm trọng', color: '#DC2626', bg: 'rgba(220,38,38,0.08)' },
+  medium: { label: 'Trung bình', color: '#D97706', bg: 'rgba(245,158,11,0.1)' },
+  low: { label: 'Nhẹ', color: '#2E7D32', bg: 'rgba(46,125,50,0.1)' },
+};
+
+const MotionBox = framMotion(Box);
 
 export default function ReportPage() {
   const { detections } = useAnalysis();
 
+  const tableRows = detections.length
+    ? detections.map((d, i) => ({
+        key: `${d.label}-${i}`,
+        time: `${d.timestamp.toFixed(1)}s`,
+        location: d.anatomicalLocation,
+        label: d.label,
+        confidence: `${(d.confidence * 100).toFixed(0)}%`,
+      }))
+    : reportItems.map((item, i) => ({
+        key: `${item.label}-${i}`,
+        time: `Frame ${i + 1}`,
+        location: item.location,
+        label: item.label,
+        confidence: '91%',
+      }));
+
   return (
-    <div className="min-h-[calc(100vh-130px)] px-5 py-8 lg:px-8">
-      <div className="mx-auto w-full max-w-[1440px] space-y-5">
-        <Card className="glass-card rounded-3xl">
-          <CardHeader className="flex flex-col gap-3 border-b border-white/10 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <Badge variant="outline" className="mb-2 border-teal-400/30 bg-teal-500/15 text-teal-200">
-                Báo cáo tổng kết
-              </Badge>
-              <CardTitle className="text-zinc-100">Phiên nội soi hôm nay</CardTitle>
-              <CardDescription className="text-zinc-400">
-                Tổng hợp hình ảnh tổn thương, tọa độ và checklist gợi ý từ LLM.
-              </CardDescription>
-            </div>
+    <Box sx={{ minHeight: 'calc(100vh - 130px)', py: 5, px: { xs: 2, lg: 4 }, backgroundColor: 'background.default' }}>
+      <Container maxWidth="lg" sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
 
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button className="bg-teal-500 text-zinc-950 hover:bg-teal-400">
-                  <Download className="mr-2" /> Xuất báo cáo PDF
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Xuất báo cáo PDF</DialogTitle>
-                  <DialogDescription>
-                    Chức năng xuất file đang ở chế độ giao diện mẫu. Logic tạo PDF sẽ được kết nối API sau.
-                  </DialogDescription>
-                </DialogHeader>
-                <DialogFooter>
-                  <Button variant="outline" className="border-white/20 bg-zinc-900/50">
-                    Đóng
-                  </Button>
-                  <Button className="bg-teal-500 text-zinc-950 hover:bg-teal-400">Xác nhận</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </CardHeader>
-        </Card>
+        {/* ── Page Header ── */}
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: { xs: 'column', md: 'row' },
+            alignItems: { md: 'flex-start' },
+            justifyContent: 'space-between',
+            gap: 2,
+          }}
+        >
+          <Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+              <Box
+                sx={{
+                  px: 1.5,
+                  py: 0.4,
+                  borderRadius: '6px',
+                  backgroundColor: 'rgba(0,96,100,0.1)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                }}
+              >
+                <FileText size={12} color="#006064" />
+                <Typography variant="caption" sx={{ fontWeight: 700, color: '#006064', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Báo cáo tổng kết
+                </Typography>
+              </Box>
+            </Box>
+            <Typography variant="h3" sx={{ fontSize: '1.5rem', fontWeight: 800, color: 'text.primary', mb: 0.5 }}>
+              Phiên nội soi hôm nay
+            </Typography>
+            <Typography variant="body2" color="textSecondary">
+              Tổng hợp hình ảnh tổn thương, tọa độ và checklist gợi ý từ LLM.
+            </Typography>
+          </Box>
 
-        <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 lg:auto-rows-max">
-          {reportItems.map((item, idx) => (
-            <motion.article
-              key={item.id}
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.35, delay: idx * 0.08 }}
-              className={`glass-card rounded-2xl p-4 ${idx === 0 ? "md:col-span-2 lg:col-span-2 lg:row-span-2" : ""}`}
+          <Dialog>
+            <DialogTrigger asChild>
+              <MuiButton
+                variant="contained"
+                startIcon={<Download size={18} />}
+                sx={{ borderRadius: '10px', px: 3, py: 1.25, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}
+              >
+                Xuất báo cáo PDF
+              </MuiButton>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Xuất báo cáo PDF</DialogTitle>
+                <DialogDescription>
+                  Chức năng xuất file đang ở chế độ giao diện mẫu. Logic tạo PDF sẽ được kết nối API sau.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <MuiButton variant="outlined" sx={{ borderRadius: '8px' }}>Đóng</MuiButton>
+                <MuiButton variant="contained" sx={{ borderRadius: '8px' }}>Xác nhận</MuiButton>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </Box>
+
+        {/* ── Finding Cards ── */}
+        <Grid container spacing={2.5}>
+          {reportItems.map((item, idx) => {
+            const sev = severityMap[item.severity];
+            return (
+              <Grid item xs={12} md={4} key={item.id}>
+                <MotionBox
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.35, delay: idx * 0.08 }}
+                  sx={{
+                    height: '100%',
+                    backgroundColor: 'background.paper',
+                    borderRadius: '18px',
+                    border: '1px solid #E2EAE8',
+                    boxShadow: '0 2px 12px rgba(13,27,42,0.06)',
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    transition: 'box-shadow 0.2s, transform 0.2s',
+                    '&:hover': { boxShadow: '0 8px 28px rgba(13,27,42,0.1)', transform: 'translateY(-2px)' },
+                  }}
+                >
+                  {/* Gradient preview */}
+                  <Box
+                    sx={{
+                      height: 100,
+                      background: item.gradient,
+                      position: 'relative',
+                      display: 'flex',
+                      alignItems: 'flex-end',
+                      p: 2,
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        top: 12,
+                        right: 12,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 0.5,
+                        px: 1.25,
+                        py: 0.4,
+                        borderRadius: '6px',
+                        backgroundColor: 'rgba(255,255,255,0.85)',
+                        backdropFilter: 'blur(8px)',
+                      }}
+                    >
+                      <Sparkles size={11} color={item.accentColor} />
+                      <Typography variant="caption" sx={{ fontWeight: 700, color: item.accentColor, fontSize: '0.68rem' }}>
+                        AI Flag
+                      </Typography>
+                    </Box>
+                    <Box
+                      sx={{
+                        px: 1.5,
+                        py: 0.5,
+                        borderRadius: '8px',
+                        backgroundColor: sev.bg,
+                        border: `1px solid ${sev.color}30`,
+                      }}
+                    >
+                      <Typography variant="caption" sx={{ fontWeight: 700, color: sev.color, fontSize: '0.7rem' }}>
+                        {sev.label}
+                      </Typography>
+                    </Box>
+                  </Box>
+
+                  {/* Card body */}
+                  <Box sx={{ p: 2.5, flex: 1, display: 'flex', flexDirection: 'column' }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 800, color: 'text.primary', mb: 0.5, fontSize: '1rem' }}>
+                      {item.label}
+                    </Typography>
+
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+                      <MapPin size={12} color={item.accentColor} />
+                      <Typography variant="caption" sx={{ color: item.accentColor, fontWeight: 600 }}>
+                        {item.location}
+                      </Typography>
+                    </Box>
+                    <Typography variant="caption" sx={{ color: 'text.disabled', fontFamily: 'monospace', mb: 2, display: 'block' }}>
+                      {item.coordinate}
+                    </Typography>
+
+                    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      {item.checklist.map((point) => (
+                        <Box key={point} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+                          <CheckCircle2 size={14} color="#2E7D32" style={{ marginTop: 1, flexShrink: 0 }} />
+                          <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.55 }}>
+                            {point}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Box>
+                  </Box>
+                </MotionBox>
+              </Grid>
+            );
+          })}
+        </Grid>
+
+        {/* ── Summary DataTable ── */}
+        <Box>
+          <Box sx={{ mb: 2.5 }}>
+            <Typography variant="h3" sx={{ fontSize: '1.25rem', fontWeight: 700, color: 'text.primary', mb: 0.5 }}>
+              Bảng tổng hợp phát hiện
+            </Typography>
+            <Typography variant="body2" color="textSecondary">
+              Dữ liệu từ AnalysisContext — sẵn sàng thay bằng API thật.
+            </Typography>
+          </Box>
+
+          <Box
+            sx={{
+              backgroundColor: 'background.paper',
+              borderRadius: '16px',
+              border: '1px solid #E2EAE8',
+              boxShadow: '0 2px 12px rgba(13,27,42,0.06)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Table header */}
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1.5fr 2fr 1fr',
+                px: 3,
+                py: 1.5,
+                backgroundColor: '#F8FAFB',
+                borderBottom: '1px solid #E2EAE8',
+              }}
             >
-              <div className="mb-3 h-24 rounded-xl border border-white/10 bg-[radial-gradient(circle_at_30%_30%,rgba(161,161,170,0.2),rgba(24,24,27,0.9))] lg:h-28" />
-              <div className="mb-2 flex items-center justify-between">
-                <p className="font-semibold text-zinc-100">{item.label}</p>
-                <Badge variant="outline" className="border-amber-400/30 bg-amber-500/15 text-amber-100">
-                  AI Flag
-                </Badge>
-              </div>
-              <p className="text-xs text-zinc-300">{item.location}</p>
-              <p className="mt-1 text-xs text-zinc-400">{item.coordinate}</p>
-              <ul className="mt-3 space-y-1">
-                {item.checklist.map((point) => (
-                  <li key={point} className="flex items-start gap-2 text-xs text-zinc-200">
-                    <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-teal-300" />
-                    {point}
-                  </li>
-                ))}
-              </ul>
-            </motion.article>
-          ))}
-        </section>
+              {['Thời điểm', 'Vị trí giải phẫu', 'Chẩn đoán AI', 'Độ tin cậy'].map((h) => (
+                <Typography key={h} variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                  {h}
+                </Typography>
+              ))}
+            </Box>
 
-        <Card className="glass-card rounded-3xl">
-          <CardHeader>
-            <CardTitle className="text-zinc-100">Bảng tổng hợp phát hiện</CardTitle>
-            <CardDescription className="text-zinc-400">
-              Dữ liệu đến từ AnalysisContext (mock), sẵn sàng thay bằng API thật.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Thời điểm</TableHead>
-                  <TableHead>Vị trí giải phẫu</TableHead>
-                  <TableHead>Chẩn đoán AI</TableHead>
-                  <TableHead>Độ tin cậy</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(detections.length ? detections : reportItems).map((item, idx) => {
-                  const hasRuntimeData = "timestamp" in item;
-                  return (
-                    <TableRow key={`${item.label}-${idx}`}>
-                      <TableCell className="text-zinc-300">
-                        {hasRuntimeData ? `${item.timestamp.toFixed(1)}s` : `Frame ${idx + 1}`}
-                      </TableCell>
-                      <TableCell className="text-zinc-200">
-                        {hasRuntimeData ? item.anatomicalLocation : item.location}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2 text-zinc-100">
-                          <ScanSearch className="size-4 text-teal-300" />
-                          {item.label}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2 text-zinc-200">
-                          <MapPinned className="size-4 text-zinc-400" />
-                          {hasRuntimeData ? `${(item.confidence * 100).toFixed(0)}%` : "91%"}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+            {tableRows.map((row, idx) => (
+              <Box
+                key={row.key}
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1.5fr 2fr 1fr',
+                  px: 3,
+                  py: 1.875,
+                  alignItems: 'center',
+                  borderBottom: idx < tableRows.length - 1 ? '1px solid #F0F4F3' : 'none',
+                  transition: 'background-color 0.15s',
+                  '&:hover': { backgroundColor: '#F8FAFB' },
+                }}
+              >
+                <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary', fontWeight: 500 }}>
+                  {row.time}
+                </Typography>
+                <Typography variant="body2" color="textSecondary">
+                  {row.location}
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <ScanSearch size={15} color="#006064" />
+                  <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
+                    {row.label}
+                  </Typography>
+                </Box>
+                <Box
+                  sx={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    px: 1.25,
+                    py: 0.4,
+                    borderRadius: '6px',
+                    backgroundColor: 'rgba(46,125,50,0.08)',
+                    width: 'fit-content',
+                  }}
+                >
+                  <Typography variant="caption" sx={{ fontWeight: 700, color: '#2E7D32' }}>
+                    {row.confidence}
+                  </Typography>
+                </Box>
+              </Box>
+            ))}
+
+            {/* Table footer with export */}
+            <Box
+              sx={{
+                px: 3,
+                py: 2,
+                borderTop: '1px solid #E2EAE8',
+                backgroundColor: '#F8FAFB',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <Typography variant="caption" color="textSecondary">
+                {tableRows.length} bản ghi · Cập nhật lần cuối: hôm nay
+              </Typography>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <MuiButton
+                    size="small"
+                    variant="outlined"
+                    startIcon={<Download size={14} />}
+                    sx={{
+                      borderRadius: '8px',
+                      borderColor: '#E2EAE8',
+                      color: 'text.secondary',
+                      fontWeight: 600,
+                      fontSize: '0.8rem',
+                      py: 0.75,
+                      '&:hover': { borderColor: '#006064', color: 'primary.main', backgroundColor: 'rgba(0,96,100,0.04)' },
+                    }}
+                  >
+                    Xuất PDF
+                  </MuiButton>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Xuất báo cáo PDF</DialogTitle>
+                    <DialogDescription>
+                      Chức năng xuất file đang ở chế độ giao diện mẫu. Logic tạo PDF sẽ được kết nối API sau.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <MuiButton variant="outlined" sx={{ borderRadius: '8px' }}>Đóng</MuiButton>
+                    <MuiButton variant="contained" sx={{ borderRadius: '8px' }}>Xác nhận</MuiButton>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </Box>
+          </Box>
+        </Box>
+      </Container>
+    </Box>
   );
 }

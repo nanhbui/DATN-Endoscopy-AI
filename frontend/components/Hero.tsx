@@ -1,27 +1,85 @@
-"use client"
+'use client';
 
-import { motion } from "framer-motion"
-import { Button } from "@/components/ui/button"
-import { Microscope } from "lucide-react"
+import { motion as framMotion } from 'framer-motion';
+import { Button } from '@/components/ui/button';
+import { Microscope } from 'lucide-react';
+import Box from '@mui/material/Box';
+import Container from '@mui/material/Container';
+import Typography from '@mui/material/Typography';
+import { styled } from '@mui/material/styles';
+
+const HeroSection = styled(Box)(({ theme }) => ({
+  minHeight: '60vh',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: `linear-gradient(135deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
+  color: theme.palette.common.white,
+  marginBottom: theme.spacing(6),
+  position: 'relative',
+  overflow: 'hidden',
+}));
+
+const HeroContent = styled(Box)(({ theme }) => ({
+  textAlign: 'center',
+  maxWidth: 800,
+  zIndex: 1,
+}));
+
+const MotionBox = framMotion(HeroContent);
 
 export default function Hero() {
   return (
-    <section className="relative flex min-h-[60vh] items-center justify-center bg-gradient-to-r from-cyan-600 to-blue-600 text-white mb-12">
-      <motion.div
-        className="text-center"
+    <HeroSection>
+      <MotionBox
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.8 }}
       >
-        <Microscope size={80} className="mx-auto mb-6" />
-        <h1 className="text-5xl font-bold mb-4">Nội soi Y tế Thông minh</h1>
-        <p className="text-lg mb-6 max-w-xl mx-auto">
+        <Box sx={{ mb: 3, display: 'flex', justifyContent: 'center' }}>
+          <Microscope size={80} />
+        </Box>
+        <Typography
+          variant="h1"
+          component="h1"
+          sx={{
+            fontSize: { xs: '2rem', sm: '2.5rem', md: '3rem' },
+            fontWeight: 700,
+            mb: 2,
+          }}
+        >
+          Nội soi Y tế Thông minh
+        </Typography>
+        <Typography
+          variant="body1"
+          sx={{
+            fontSize: { xs: '0.95rem', md: '1.1rem' },
+            mb: 4,
+            maxWidth: 600,
+            mx: 'auto',
+            lineHeight: 1.6,
+          }}
+        >
           Nền tảng AI hỗ trợ phân tích video nội soi, phát hiện bất thường và cung cấp giải thích chi tiết.
-        </p>
-        <Button className="bg-white text-cyan-600 hover:bg-gray-100" onClick={() => { /* start analysis */ }}>
+        </Typography>
+        <Button
+          variant="contained"
+          size="large"
+          sx={{
+            backgroundColor: '#fff',
+            color: 'primary.main',
+            fontWeight: 600,
+            '&:hover': {
+              backgroundColor: '#f0f0f0',
+            },
+          }}
+          onClick={() => {
+            /* start analysis */
+          }}
+        >
           Bắt đầu Phân tích
         </Button>
-      </motion.div>
-    </section>
-  )
+      </MotionBox>
+    </HeroSection>
+  );
 }

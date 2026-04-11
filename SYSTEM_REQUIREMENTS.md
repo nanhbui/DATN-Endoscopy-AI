@@ -28,11 +28,15 @@ The system revolves around controlling the GStreamer pipeline states based on AI
    * For every frame with a detection (Confidence > Threshold), execute **Smart Ignore Check** (Phase 4).
    * If the detection is NEW (not ignored), send a WebSocket event `DETECTION_FOUND` to the UI and immediately set pipeline to `GST_STATE_PAUSED`.
 
-### Phase 2: User Interaction (The Pause State)
-1. Upon receiving `DETECTION_FOUND`, the React Frontend displays the bounding box on the video canvas.
-2. The Frontend activates the Voice Listener (Web Speech API) and reveals UI action buttons: **[Ignore]** and **[Explain More]**.
-3. Wait for user action.
-
+## 2. TECHNOLOGY STACK CONSTRAINTS
+* **Frontend Interface:** React.js (Handles UI, Video Stream Player, WebSocket client, Web Speech API for voice commands).
+* **Backend / Middleware:** **Python 3.x / FastAPI** (Runs on the Remote GPU Server. Acts as the asynchronous Controller, WebSocket server, manages state, and interacts with LLM APIs).
+* **Video & AI Engine (Core):** GStreamer with NVIDIA DeepStream / TensorRT.
+  * Controlled via **GstPython** bindings or running as a standalone C++ daemon communicating with FastAPI via local sockets/ZMQ.
+  * Utilizes GPU hardware acceleration (`nvvideoconvert`, `nvinfer`) for YOLO object detection.
+* **Communication:** * **WebSockets (FastAPI `websockets`):** Real-time bi-directional messaging (Controls, Metadata, AI Flags).
+  * **Video Streaming:** WebRTC or RTSP/HLS to transmit the processed video pipeline from the Remote GPU Server to the Client Browser.
+  
 ### Phase 3: Action Execution
 **Action A: "Ignore" (Bỏ qua)**
 1. Frontend sends `ACTION_IGNORE` to Controller.
@@ -99,6 +103,9 @@ When `ACTION_EXPLAIN` is triggered, the LLM must return a structured response.
   }
  ]
 }
+
+   - Define strict `Pydantic` models for WebSocket incoming/outgoing payloads (e.g., `DetectionModel`, `ActionPayload`) to ensure type safety.
+
 
 ## 6. INSTRUCTIONS FOR THE AI AGENT
 When generating code for this system, strictly follow these rules:

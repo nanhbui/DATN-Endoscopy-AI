@@ -1,53 +1,132 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Activity, Gauge, Microscope, ScanLine, ScrollText } from "lucide-react";
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { Activity, Gauge, Microscope, ScanLine, ScrollText } from 'lucide-react';
+
+import AppBar from '@mui/material/AppBar';
+import Toolbar from '@mui/material/Toolbar';
+import Box from '@mui/material/Box';
+import MuiButton from '@mui/material/Button';
+import Container from '@mui/material/Container';
+import Typography from '@mui/material/Typography';
 
 const navItems = [
-  { href: "/", label: "Dashboard", icon: Gauge },
-  { href: "/workspace", label: "Workspace", icon: ScanLine },
-  { href: "/report", label: "Báo cáo", icon: ScrollText },
-  { href: "/train", label: "Train", icon: Activity },
+  { href: '/', label: 'Dashboard', icon: Gauge },
+  { href: '/workspace', label: 'Workspace', icon: ScanLine },
+  { href: '/report', label: 'Báo cáo', icon: ScrollText },
+  { href: '/train', label: 'Train', icon: Activity },
 ];
 
 export default function NavBar() {
   const pathname = usePathname();
 
   return (
-    <nav className="sticky top-0 z-50 border-b border-white/10 bg-zinc-950/75 backdrop-blur-2xl">
-      <div className="mx-auto flex w-full max-w-[1440px] items-center justify-between gap-4 px-5 py-3 lg:px-8">
-        <Link href="/" className="flex items-center gap-3">
-          <span className="inline-flex size-10 items-center justify-center rounded-xl border border-white/10 bg-zinc-900/80 text-teal-300">
-            <Microscope size={20} />
-          </span>
-          <div>
-            <p className="text-sm text-zinc-400">AI Endoscopy Suite</p>
-            <p className="text-base font-semibold text-zinc-100">Hệ thống Phân tích Nội soi</p>
-          </div>
-        </Link>
+    <AppBar
+      position="sticky"
+      elevation={0}
+      sx={{
+        backgroundColor: 'rgba(255,255,255,0.95)',
+        backdropFilter: 'blur(16px)',
+        borderBottom: '1px solid #E2EAE8',
+        zIndex: 50,
+      }}
+    >
+      <Container maxWidth="lg">
+        <Toolbar disableGutters sx={{ gap: 2, justifyContent: 'space-between', py: 0.5 }}>
+          {/* Logo */}
+          <Box
+            component={Link}
+            href="/"
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              textDecoration: 'none',
+              color: 'inherit',
+            }}
+          >
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 38,
+                height: 38,
+                borderRadius: '10px',
+                background: 'linear-gradient(135deg, #006064 0%, #00838F 100%)',
+                color: '#fff',
+                flexShrink: 0,
+                boxShadow: '0 4px 12px rgba(0,96,100,0.3)',
+              }}
+            >
+              <Microscope size={20} />
+            </Box>
+            <Box sx={{ lineHeight: 1 }}>
+              <Typography
+                variant="caption"
+                sx={{ fontWeight: 700, color: 'primary.main', letterSpacing: '0.06em', textTransform: 'uppercase', display: 'block' }}
+              >
+                AI Endoscopy Suite
+              </Typography>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', lineHeight: 1.2 }}>
+                Smart Endoscopy
+              </Typography>
+            </Box>
+          </Box>
 
-        <ul className="flex items-center gap-2 overflow-x-auto">
-          {navItems.map(({ href, label, icon: Icon }) => {
-            const isActive = pathname === href;
-            return (
-              <li key={href}>
-                <Link
+          {/* Nav Items */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, overflowX: 'auto' }}>
+            {navItems.map(({ href, label, icon: Icon }) => {
+              const isActive = pathname === href;
+              return (
+                <MuiButton
+                  key={href}
+                  component={Link}
                   href={href}
-                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${
-                    isActive
-                      ? "border-teal-400/60 bg-teal-500/15 text-teal-200"
-                      : "border-white/10 bg-zinc-900/50 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
-                  }`}
+                  size="small"
+                  sx={{
+                    textTransform: 'none',
+                    fontSize: '0.875rem',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 0.75,
+                    borderRadius: '8px',
+                    px: 1.75,
+                    py: 0.875,
+                    minWidth: 0,
+                    transition: 'all 0.2s ease',
+                    color: isActive ? 'primary.main' : 'text.secondary',
+                    backgroundColor: isActive ? 'rgba(0,96,100,0.08)' : 'transparent',
+                    position: 'relative',
+                    '&::after': isActive
+                      ? {
+                          content: '""',
+                          position: 'absolute',
+                          bottom: -1,
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          width: '60%',
+                          height: 2,
+                          borderRadius: '2px 2px 0 0',
+                          backgroundColor: 'primary.main',
+                        }
+                      : {},
+                    '&:hover': {
+                      backgroundColor: 'rgba(0,96,100,0.06)',
+                      color: 'primary.dark',
+                    },
+                  }}
+                  startIcon={<Icon size={15} />}
                 >
-                  <Icon size={16} />
                   {label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </nav>
+                </MuiButton>
+              );
+            })}
+          </Box>
+        </Toolbar>
+      </Container>
+    </AppBar>
   );
 }
