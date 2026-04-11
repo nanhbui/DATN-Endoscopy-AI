@@ -38,13 +38,17 @@ from openai import AsyncOpenAI
 # ── Path setup ───────────────────────────────────────────────────────────────
 _HERE = Path(__file__).resolve()
 _REPO_ROOT = _HERE.parents[3]
-_PIPELINE_DIR = _HERE.parents[1] / "pipeline"
+
+# Support running from arbitrary directory (e.g. GPU server deployment)
+# PIPELINE_DIR env var overrides default relative path
+_PIPELINE_DIR = Path(os.getenv("PIPELINE_DIR", str(_HERE.parents[1] / "pipeline")))
 sys.path.insert(0, str(_PIPELINE_DIR))
 
 from pipeline_controller import PipelineController, PipelineState   # noqa: E402
 
 # ── Config ───────────────────────────────────────────────────────────────────
-UPLOAD_DIR = _REPO_ROOT / "data" / "uploads"
+# ENDOSCOPY_UPLOAD_DIR env var overrides default (needed on GPU server)
+UPLOAD_DIR = Path(os.getenv("ENDOSCOPY_UPLOAD_DIR", str(_REPO_ROOT / "data" / "uploads")))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -137,6 +141,7 @@ async def ws_analysis(websocket: WebSocket, video_id: str):
     # Create and start pipeline controller
     ctrl = PipelineController(video_id=video_id)
     sess["controller"] = ctrl
+    ctrl.set_loop(asyncio.get_running_loop())
     ctrl.start(sess["video_path"])
 
     # Two concurrent tasks: relay pipeline events → FE, and FE actions → pipeline

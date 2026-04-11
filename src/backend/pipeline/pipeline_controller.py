@@ -1,13 +1,11 @@
 """pipeline_controller.py — GStreamer pipeline state machine.
 
 Architecture (SYSTEM_REQUIREMENTS §2):
-  GStreamer (filesrc ! decodebin ! videoconvert ! appsink)
-    → frame extracted per YOLO inference
-    → detection event pushed to asyncio.Queue
-    → FastAPI WS server reads queue and relays to FE
+  GStreamer + YOLO run in a SUBPROCESS (process isolation prevents
+  GLib-thread / CUDA conflict that causes hangs when both run in-process).
 
-GstPython (gi.repository.Gst) is used when available.
-Falls back to OpenCV + YOLO for CPU-only / dev environments.
+  Subprocess: filesrc ! decodebin ! appsink → YOLO inference → result Queue
+  Main process: bridge thread reads Queue → asyncio.Queue → FastAPI WS server
 
 States (§3):
   IDLE → PLAYING → PAUSED_WAITING_INPUT → PROCESSING_LLM → EOS_SUMMARY
@@ -16,45 +14,29 @@ States (§3):
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
-import cv2
-import numpy as np
+import os as _os
+import multiprocessing as _mp
 
-# ── GstPython (optional) ────────────────────────────────────────────────────
-try:
-    import gi
-    gi.require_version("Gst", "1.0")
-    from gi.repository import Gst, GLib
-    Gst.init(None)
-    GST_AVAILABLE = True
-except Exception:
-    GST_AVAILABLE = False
-
-# ── YOLOv8 (optional) ───────────────────────────────────────────────────────
-try:
-    from ultralytics import YOLO as _YOLO
-    YOLO_AVAILABLE = True
-except ImportError:
-    YOLO_AVAILABLE = False
-
-# ── Project imports ─────────────────────────────────────────────────────────
-from smart_ignore_memory import SmartIgnoreMemory   # same package
+# ── Subprocess spawn context (avoids CUDA fork issues) ────────────────────────
+_mp_ctx = _mp.get_context("spawn")
 
 # ── Default YOLO model path ──────────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# daday.pt — YOLOv8 trained on Vietnamese gastroscopy (stomach only)
-# Classes: Viem da day HP am | Viem da day HP duong | Ung thu da day
-DEFAULT_MODEL = _REPO_ROOT / "sample_code/endocv_2024/model_yolo/daday.pt"
-
-# Fallback to generic model if daday.pt not found
-if not DEFAULT_MODEL.exists():
-    DEFAULT_MODEL = _REPO_ROOT / "yolov8n.pt"
+_env_model = _os.environ.get("ENDOSCOPY_MODEL")
+if _env_model and Path(_env_model).exists():
+    DEFAULT_MODEL = Path(_env_model)
+else:
+    DEFAULT_MODEL = _REPO_ROOT / "sample_code/endocv_2024/model_yolo/daday.pt"
+    if not DEFAULT_MODEL.exists():
+        DEFAULT_MODEL = _REPO_ROOT / "yolov8n.pt"
 
 CONFIDENCE_THRESHOLD = 0.50   # higher threshold for medical use
 
@@ -69,12 +51,11 @@ class PipelineState(str, Enum):
     EOS_SUMMARY = "EOS_SUMMARY"
 
 
-# ── Event types sent to WS server ────────────────────────────────────────────
+# ── Event builders ────────────────────────────────────────────────────────────
 
 def _detection_event(frame_index: int, timestamp_ms: int, location: str,
                      label: str, confidence: float, bbox: list[float],
                      frame_b64: Optional[str] = None) -> dict:
-    """Build DETECTION_FOUND payload (§5.1)."""
     return {
         "event": "DETECTION_FOUND",
         "data": {
@@ -82,24 +63,232 @@ def _detection_event(frame_index: int, timestamp_ms: int, location: str,
             "timestamp_ms": timestamp_ms,
             "location": location,
             "lesion": {"label": label, "confidence": confidence, "bbox": bbox},
-            "frame_b64": frame_b64,  # cropped thumbnail (base64 PNG), may be None
+            "frame_b64": frame_b64,
         },
     }
 
-
 def _eos_event(confirmed_detections: list[dict]) -> dict:
-    """Build VIDEO_FINISHED payload (§6)."""
     return {"event": "VIDEO_FINISHED", "data": {"detections": confirmed_detections}}
-
 
 def _state_event(state: PipelineState) -> dict:
     return {"event": "STATE_CHANGE", "data": {"state": state.value}}
 
 
+# ── Subprocess worker (GStreamer + YOLO, no asyncio) ──────────────────────────
+
+def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
+                     result_q: "_mp.Queue[dict]", cmd_q: "_mp.Queue[str]") -> None:
+    """Runs in isolated subprocess: GStreamer decode + YOLO inference.
+
+    Sends detection/state events to result_q.
+    Receives commands from cmd_q: STOP | RESUME | IGNORE:<fi>:<json>
+    """
+    import numpy as np
+    import cv2
+    import base64
+    import json as _json
+
+    # ── YOLO load + GPU warm-up ───────────────────────────────────────────
+    model = None
+    model_names = {}
+    try:
+        from ultralytics import YOLO
+        model = YOLO(model_path_str)
+        model_names = model.names or {}
+        # Warm-up: forces full CUDA init before GStreamer starts its threads
+        dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+        model(dummy, verbose=False, conf=0.99)
+        print("[Worker] YOLO + GPU warm-up done", flush=True)
+    except Exception as exc:
+        print(f"[Worker] YOLO load/warm-up failed: {exc}", flush=True)
+
+    # ── GStreamer pipeline ────────────────────────────────────────────────
+    try:
+        import gi
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+        Gst.init(None)
+    except Exception as exc:
+        result_q.put({"event": "ERROR", "data": {"message": f"GStreamer unavailable: {exc}"}})
+        result_q.put(_eos_event([]))
+        return
+
+    pipeline_str = (
+        f'filesrc location="{video_path_str}" ! qtdemux name=d d.video_0 ! '
+        "queue ! h264parse ! avdec_h264 ! videoconvert ! "
+        "appsink name=sink sync=false max-buffers=2 drop=false"
+    )
+    gst_pipeline = Gst.parse_launch(pipeline_str)
+    sink = gst_pipeline.get_by_name("sink")
+    sink.set_property("emit-signals", False)
+    gst_pipeline.set_state(Gst.State.PLAYING)
+    bus = gst_pipeline.get_bus()
+    print("[Worker] GStreamer PLAYING", flush=True)
+
+    # ── Inline ignore memory (no import path issues in subprocess) ─────────
+    _ignored: list[dict] = []
+
+    def _iou(a: list, b: list) -> float:
+        ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+        ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        ua = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter
+        return inter / ua if ua > 0 else 0.0
+
+    def _is_ignored(fi: int, bbox: list) -> bool:
+        return any(
+            abs(ig["fi"] - fi) <= 15 and _iou(ig["bbox"], bbox) >= 0.8
+            for ig in _ignored
+        )
+
+    def _infer_location(bbox: list, shape: tuple) -> str:
+        cy = (bbox[1] + bbox[3]) / 2 / shape[0]
+        if cy < 0.33:
+            return "Thân vị"
+        elif cy < 0.66:
+            return "Hang vị"
+        return "Môn vị"
+
+    def _crop_b64(frame: np.ndarray, bbox: list) -> Optional[str]:
+        try:
+            x1, y1, x2, y2 = map(int, bbox)
+            crop = frame[max(0, y1):y2, max(0, x1):x2]
+            # Limit thumbnail to 320px on longest side
+            h, w = crop.shape[:2]
+            if max(h, w) > 320:
+                scale = 320 / max(h, w)
+                crop = cv2.resize(crop, (int(w * scale), int(h * scale)))
+            ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ok:
+                return base64.b64encode(buf.tobytes()).decode()
+        except Exception:
+            pass
+        return None
+
+    # ── Main loop ──────────────────────────────────────────────────────────
+    confirmed: list[dict] = []
+    frame_index = 0
+    paused = False
+
+    try:
+        while True:
+            # Drain command queue
+            while True:
+                try:
+                    cmd = cmd_q.get_nowait()
+                except Exception:
+                    break
+                if cmd == "STOP":
+                    return
+                elif cmd == "RESUME":
+                    paused = False
+                elif cmd.startswith("IGNORE:"):
+                    parts = cmd.split(":", 2)
+                    if len(parts) == 3:
+                        fi = int(parts[1])
+                        data = _json.loads(parts[2])
+                        _ignored.append({"fi": fi, "bbox": data["bbox"]})
+                    paused = False
+
+            if paused:
+                time.sleep(0.02)
+                continue
+
+            # Pull frame
+            sample = sink.emit("try-pull-sample", Gst.SECOND)
+            if sample is None:
+                msg = bus.timed_pop_filtered(0, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+                if msg:
+                    print(f"[Worker] Bus EOS/error: {msg.type}", flush=True)
+                    break
+                continue
+
+            # Decode to BGR
+            buf = sample.get_buffer()
+            caps = sample.get_caps()
+            struct = caps.get_structure(0)
+            w = struct.get_value("width")
+            h = struct.get_value("height")
+            fmt = struct.get_value("format")
+            ok, mapinfo = buf.map(Gst.MapFlags.READ)
+            if not ok:
+                continue
+            raw = np.frombuffer(mapinfo.data, dtype=np.uint8).copy()
+            buf.unmap(mapinfo)
+
+            if fmt == "I420":
+                yuv = raw.reshape((h * 3 // 2, w))
+                frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+            elif fmt in ("NV12", "NV21"):
+                yuv = raw.reshape((h * 3 // 2, w))
+                code = cv2.COLOR_YUV2BGR_NV12 if fmt == "NV12" else cv2.COLOR_YUV2BGR_NV21
+                frame = cv2.cvtColor(yuv, code)
+            elif fmt == "RGB":
+                frame = cv2.cvtColor(raw.reshape(h, w, 3), cv2.COLOR_RGB2BGR)
+            else:
+                frame = raw.reshape(h, w, 3)
+
+            # YOLO inference
+            timestamp_ms = int(frame_index * 1000 / 30)
+            if model is not None:
+                try:
+                    results = model(frame, conf=conf, verbose=False)
+                    for result in results:
+                        if result.boxes is None or len(result.boxes) == 0:
+                            continue
+                        for box in result.boxes:
+                            if box.conf is None or box.conf.shape[0] == 0:
+                                continue
+                            det_conf = float(box.conf[0])
+                            cls_id = int(box.cls[0])
+                            label = model_names.get(cls_id, f"class_{cls_id}")
+                            xyxy = box.xyxy[0].tolist()
+
+                            if _is_ignored(frame_index, xyxy):
+                                continue
+
+                            location = _infer_location(xyxy, frame.shape)
+                            thumbnail_b64 = _crop_b64(frame, xyxy)
+                            det_data = {
+                                "frame_index": frame_index,
+                                "timestamp_ms": timestamp_ms,
+                                "location": location,
+                                "lesion": {
+                                    "label": label,
+                                    "confidence": round(det_conf, 4),
+                                    "bbox": xyxy,
+                                },
+                                "frame_b64": thumbnail_b64,
+                            }
+                            confirmed.append(det_data)
+                            result_q.put({"event": "DETECTION_FOUND", "data": det_data})
+                            paused = True
+                            break   # one detection per frame
+                        if paused:
+                            break
+                except Exception as exc:
+                    print(f"[Worker] YOLO error frame {frame_index}: {exc}", flush=True)
+
+            frame_index += 1
+
+    except Exception as exc:
+        import traceback
+        print(f"[Worker] Fatal: {exc}", flush=True)
+        traceback.print_exc()
+    finally:
+        gst_pipeline.set_state(Gst.State.NULL)
+        print(f"[Worker] Done. {frame_index} frames, {len(confirmed)} detections.", flush=True)
+
+    result_q.put(_eos_event(confirmed))
+
+
 # ── PipelineController ────────────────────────────────────────────────────────
 
 class PipelineController:
-    """Manages GStreamer (or OpenCV fallback) pipeline for one analysis session.
+    """Manages GStreamer+YOLO subprocess for one analysis session.
+
+    Subprocess isolation: GStreamer (GLib threads) + CUDA cannot coexist with
+    uvloop/asyncio in the same process — subprocess avoids the deadlock.
 
     After construction call ``start(video_path)`` to begin.
     Read events from ``events`` (asyncio.Queue).
@@ -109,274 +298,116 @@ class PipelineController:
     def __init__(self, video_id: str, model_path: Path = DEFAULT_MODEL) -> None:
         self.video_id = video_id
         self._model_path = model_path
-        self._model = None
 
         # Asyncio event queue consumed by the WS handler
         self.events: asyncio.Queue[dict] = asyncio.Queue()
 
-        # State machine
+        # State
         self._state = PipelineState.IDLE
-        self._play_event = threading.Event()   # set = playing, clear = paused
-        self._stop_event = threading.Event()   # set = abort loop
-
-        # Confirmed detections (user did NOT click Ignore)
+        self._pending: Optional[dict] = None
         self._confirmed: list[dict] = []
 
-        # Current pending detection (while PAUSED_WAITING_INPUT)
-        self._pending: Optional[dict] = None
-
-        # Smart Ignore memory
-        self._memory = SmartIgnoreMemory(video_id)
-
-        # Background processing thread
-        self._thread: Optional[threading.Thread] = None
+        # IPC queues and subprocess
+        self._result_q: Optional["_mp.Queue[dict]"] = None
+        self._cmd_q: Optional["_mp.Queue[str]"] = None
+        self._proc: Optional[_mp.Process] = None
+        self._bridge_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ── Public API ────────────────────────────────────────────────────────
 
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
     def start(self, video_path: Path) -> None:
-        """Launch pipeline processing in a background thread."""
-        if self._thread and self._thread.is_alive():
+        """Spawn subprocess and start bridge thread."""
+        if self._proc and self._proc.is_alive():
             return
-        self._loop = asyncio.get_event_loop()
-        self._stop_event.clear()
-        self._play_event.set()   # start playing immediately
-        self._thread = threading.Thread(
-            target=self._run_pipeline,
-            args=(video_path,),
+
+        self._result_q = _mp_ctx.Queue()
+        self._cmd_q = _mp_ctx.Queue()
+        self._proc = _mp_ctx.Process(
+            target=_pipeline_worker,
+            args=(str(video_path), str(self._model_path), CONFIDENCE_THRESHOLD,
+                  self._result_q, self._cmd_q),
             daemon=True,
         )
-        self._thread.start()
+        self._proc.start()
+        self._set_state(PipelineState.PLAYING)
+
+        self._bridge_thread = threading.Thread(
+            target=self._bridge_loop, daemon=True
+        )
+        self._bridge_thread.start()
 
     def send_action(self, action: str, payload: dict | None = None) -> None:
-        """Handle user action from FE (ACTION_IGNORE, ACTION_EXPLAIN, ACTION_RESUME)."""
+        """Handle user action from FE."""
         if action == "ACTION_IGNORE" and self._pending:
             det = self._pending
-            self._memory.add(
-                frame_index=det["frame_index"],
-                bbox=det["lesion"]["bbox"],
-                label=det["lesion"]["label"],
+            cmd = (
+                f"IGNORE:{det['frame_index']}:"
+                + json.dumps({"bbox": det["lesion"]["bbox"], "label": det["lesion"]["label"]})
             )
+            if self._cmd_q:
+                self._cmd_q.put(cmd)
             self._pending = None
-            self._resume()
         elif action == "ACTION_EXPLAIN":
             self._set_state(PipelineState.PROCESSING_LLM)
-            # LLM call is handled by the WS server; pipeline stays paused.
+            # Pipeline stays paused in subprocess; WS server handles LLM streaming.
         elif action == "ACTION_RESUME":
+            if self._cmd_q:
+                self._cmd_q.put("RESUME")
             self._pending = None
-            self._resume()
+            self._set_state(PipelineState.PLAYING)
 
     def stop(self) -> None:
         """Abort processing."""
-        self._stop_event.set()
-        self._play_event.set()  # unblock thread if paused
+        if self._cmd_q:
+            try:
+                self._cmd_q.put("STOP")
+            except Exception:
+                pass
+        if self._proc and self._proc.is_alive():
+            self._proc.terminate()
 
-    # ── Internal helpers ─────────────────────────────────────────────────
+    # ── Internal ──────────────────────────────────────────────────────────
 
     def _set_state(self, state: PipelineState) -> None:
         self._state = state
         self._push_event(_state_event(state))
 
-    def _resume(self) -> None:
-        self._set_state(PipelineState.PLAYING)
-        self._play_event.set()
-
     def _push_event(self, evt: dict) -> None:
-        """Thread-safe: schedule queue.put_nowait on the asyncio event loop."""
         if self._loop:
-            self._loop.call_soon_threadsafe(self.events.put_nowait, evt)
+            try:
+                self._loop.call_soon_threadsafe(self.events.put_nowait, evt)
+            except RuntimeError:
+                pass
 
-    # ── Pipeline runners ─────────────────────────────────────────────────
 
-    def _run_pipeline(self, video_path: Path) -> None:
-        """Choose GstPython or OpenCV depending on availability."""
-        self._set_state(PipelineState.PLAYING)
-        if GST_AVAILABLE:
-            self._run_gstreamer(video_path)
-        else:
-            self._run_opencv_fallback(video_path)
-        # EOS
-        self._set_state(PipelineState.EOS_SUMMARY)
-        self._push_event(_eos_event(self._confirmed))
-
-    # ── GStreamer path ─────────────────────────────────────────────────────
-
-    def _run_gstreamer(self, video_path: Path) -> None:
-        """GstPython pipeline: filesrc → decodebin → videoconvert → appsink."""
-        pipeline_str = (
-            f'filesrc location="{video_path}" ! decodebin ! '
-            "videoconvert ! video/x-raw,format=BGR ! appsink name=sink "
-            "emit-signals=true max-buffers=1 drop=true"
-        )
-        pipeline = Gst.parse_launch(pipeline_str)
-        sink = pipeline.get_by_name("sink")
-
-        frame_index = 0
-        frame_holder: list[Optional[np.ndarray]] = [None]
-
-        def _on_new_sample(appsink):
-            sample = appsink.emit("pull-sample")
-            if not sample:
-                return Gst.FlowReturn.ERROR
-            buf = sample.get_buffer()
-            caps = sample.get_caps()
-            struct = caps.get_structure(0)
-            w = struct.get_value("width")
-            h = struct.get_value("height")
-            ok, mapinfo = buf.map(Gst.MapFlags.READ)
-            if ok:
-                frame_holder[0] = np.frombuffer(mapinfo.data, dtype=np.uint8).reshape(h, w, 3).copy()
-                buf.unmap(mapinfo)
-            return Gst.FlowReturn.OK
-
-        sink.connect("new-sample", _on_new_sample)
-        pipeline.set_state(Gst.State.PLAYING)
-
-        bus = pipeline.get_bus()
-        fps = 30
-        model = self._get_model()
-
-        try:
-            while not self._stop_event.is_set():
-                # Wait if paused by detection
-                self._play_event.wait()
-                if self._stop_event.is_set():
-                    break
-
-                # Poll bus for EOS / error
-                msg = bus.timed_pop_filtered(
-                    0, Gst.MessageType.EOS | Gst.MessageType.ERROR
-                )
-                if msg:
-                    break
-
-                frame = frame_holder[0]
-                if frame is not None:
-                    frame_holder[0] = None
-                    self._process_frame(frame, frame_index, model)
-                    frame_index += 1
-
-                time.sleep(1 / fps)
-        finally:
-            pipeline.set_state(Gst.State.NULL)
-
-    # ── OpenCV fallback path ───────────────────────────────────────────────
-
-    def _run_opencv_fallback(self, video_path: Path) -> None:
-        """OpenCV VideoCapture pipeline (CPU fallback)."""
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            return
-
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        model = self._get_model()
-        frame_index = 0
-
-        try:
-            while not self._stop_event.is_set():
-                # Pause point: block here until _play_event is set
-                self._play_event.wait()
-                if self._stop_event.is_set():
-                    break
-
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                self._process_frame(frame, frame_index, model)
-                frame_index += 1
-                time.sleep(1 / fps)
-        finally:
-            cap.release()
-
-    # ── Per-frame detection ────────────────────────────────────────────────
-
-    def _process_frame(self, frame: np.ndarray, frame_index: int, model) -> None:
-        """Run YOLO on one frame; push DETECTION_FOUND + pause if new lesion."""
-        if model is None:
-            return
-
-        timestamp_ms = int(frame_index * 1000 / 30)
-
-        try:
-            results = model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
-        except Exception:
-            return
-
-        for result in results:
-            if result.boxes is None:
+    def _bridge_loop(self) -> None:
+        """Read subprocess events and forward to asyncio queue."""
+        while True:
+            if self._proc and not self._proc.is_alive() and (
+                self._result_q is None or self._result_q.empty()
+            ):
+                break
+            try:
+                evt = self._result_q.get(timeout=0.2)
+            except Exception:
                 continue
-            for box in result.boxes:
-                conf = float(box.conf[0])
-                cls_id = int(box.cls[0])
-                label = (model.names or {}).get(cls_id, f"class_{cls_id}")
-                xyxy = box.xyxy[0].tolist()   # [x1, y1, x2, y2]
 
-                # Smart Ignore check (§4)
-                if self._memory.is_ignored(frame_index, xyxy):
-                    continue
-
-                # New, unignored lesion → pause pipeline
-                location = self._infer_location(xyxy, frame.shape)
-                thumbnail_b64 = self._crop_b64(frame, xyxy)
-
-                evt = _detection_event(
-                    frame_index=frame_index,
-                    timestamp_ms=timestamp_ms,
-                    location=location,
-                    label=label,
-                    confidence=round(conf, 4),
-                    bbox=xyxy,
-                    frame_b64=thumbnail_b64,
-                )
+            # Track pending detection for ACTION_IGNORE / ACTION_EXPLAIN
+            if evt["event"] == "DETECTION_FOUND":
                 self._pending = evt["data"]
-                self._play_event.clear()   # ← pause pipeline thread
-                self._set_state(PipelineState.PAUSED_WAITING_INPUT)
-                self._push_event(evt)
-                return   # one detection per frame is enough
+                self._state = PipelineState.PAUSED_WAITING_INPUT
+                self._push_event(_state_event(PipelineState.PAUSED_WAITING_INPUT))
 
-    # ── Utilities ─────────────────────────────────────────────────────────
+            # Track confirmed detections
+            if evt["event"] == "VIDEO_FINISHED":
+                self._confirmed = evt["data"].get("detections", [])
+                self._set_state(PipelineState.EOS_SUMMARY)
 
-    def _get_model(self):
-        """Lazy-load YOLO model once per controller instance."""
-        if self._model is not None:
-            return self._model
-        if not YOLO_AVAILABLE:
-            return None
-        try:
-            self._model = _YOLO(str(self._model_path))
-            return self._model
-        except Exception as exc:
-            print(f"[WARN] YOLO load failed ({exc}), no inference.")
-            return None
+            self._push_event(evt)
 
-    @staticmethod
-    def _infer_location(bbox: list[float], frame_shape: tuple) -> str:
-        """Heuristic anatomical location within the stomach based on bbox position.
-
-        The gastroscopy video convention (from sample_code/endocv_2024):
-        - Upper region  → Thân vị (corpus/body)
-        - Middle region → Hang vị (antrum)
-        - Lower region  → Môn vị (pylorus)
-        """
-        h, w = frame_shape[:2]
-        cy = (bbox[1] + bbox[3]) / 2 / h
-        if cy < 0.33:
-            return "Thân vị"
-        elif cy < 0.66:
-            return "Hang vị"
-        return "Môn vị"
-
-    @staticmethod
-    def _crop_b64(frame: np.ndarray, bbox: list[float]) -> Optional[str]:
-        """Return base64-encoded PNG thumbnail of the detection region."""
-        try:
-            import base64
-            x1, y1, x2, y2 = map(int, bbox)
-            crop = frame[max(0, y1):y2, max(0, x1):x2]
-            ok, buf = cv2.imencode(".png", crop)
-            if ok:
-                return base64.b64encode(buf.tobytes()).decode()
-        except Exception:
-            pass
-        return None
+            if evt["event"] == "VIDEO_FINISHED":
+                break
