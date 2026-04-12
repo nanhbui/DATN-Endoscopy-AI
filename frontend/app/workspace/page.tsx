@@ -17,6 +17,11 @@ import {
 import { useAnalysis } from '@/context/AnalysisContext';
 import { useVoiceControl } from '@/hooks/use-voice-control';
 
+import TextField from '@mui/material/TextField';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
+import { Radio, Wifi } from 'lucide-react';
+
 import Box from '@mui/material/Box';
 import Grid from '@mui/material/Grid';
 import Typography from '@mui/material/Typography';
@@ -64,6 +69,66 @@ function StatusDot({ color }: { color: string }) {
         },
       }}
     />
+  );
+}
+
+// ── Live stream input zone ───────────────────────────────────────────────────
+
+interface LiveInputZoneProps {
+  value: string;
+  onChange: (v: string) => void;
+  onConnect: () => void;
+  isConnecting: boolean;
+}
+
+function LiveInputZone({ value, onChange, onConnect, isConnecting }: LiveInputZoneProps) {
+  return (
+    <Box
+      sx={{
+        aspectRatio: '16 / 9',
+        width: '100%',
+        borderRadius: '16px',
+        border: '2px dashed #C8D8D6',
+        backgroundColor: '#FAFCFB',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 2.5,
+        px: { xs: 3, md: 8 },
+      }}
+    >
+      <Box sx={{ width: 56, height: 56, borderRadius: '16px', backgroundColor: 'rgba(0,96,100,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#006064' }}>
+        <Wifi size={28} />
+      </Box>
+      <Box sx={{ width: '100%', maxWidth: 420, textAlign: 'center' }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', mb: 0.5 }}>
+          Kết nối nguồn video trực tiếp
+        </Typography>
+        <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 2 }}>
+          Nhập địa chỉ RTSP hoặc đường dẫn thiết bị V4L2
+        </Typography>
+        <TextField
+          fullWidth
+          size="small"
+          placeholder="rtsp://192.168.1.x:554/stream  hoặc  /dev/video0"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && value.trim()) onConnect(); }}
+          sx={{ mb: 1.5, '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
+        />
+        <MuiButton
+          variant="contained"
+          fullWidth
+          disabled={!value.trim() || isConnecting}
+          onClick={onConnect}
+          startIcon={isConnecting ? <CircularProgress size={14} sx={{ color: 'inherit' }} /> : <Radio size={16} />}
+          sx={{ borderRadius: '10px', py: 1.25, fontWeight: 700 }}
+        >
+          {isConnecting ? 'Đang kết nối…' : 'Kết nối & Bắt đầu'}
+        </MuiButton>
+      </Box>
+    </Box>
   );
 }
 
@@ -207,6 +272,31 @@ function UploadingProgress({ fileName, progress }: { fileName: string; progress:
   );
 }
 
+// ── Live stream connected panel ──────────────────────────────────────────────
+
+function LiveStreamPanel({ source, pipelineState }: { source: string; pipelineState: string }) {
+  const isActive = pipelineState === 'PLAYING' || pipelineState === 'PAUSED_WAITING_INPUT' || pipelineState === 'PROCESSING_LLM';
+  return (
+    <Box sx={{ aspectRatio: '16 / 9', width: '100%', borderRadius: '16px', backgroundColor: '#0D1117', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, position: 'relative', overflow: 'hidden' }}>
+      {/* subtle grid bg */}
+      <Box sx={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(circle, rgba(0,96,100,0.08) 1px, transparent 1px)', backgroundSize: '28px 28px', pointerEvents: 'none' }} />
+      <Box sx={{ position: 'absolute', top: 12, left: 12, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.4, borderRadius: '6px', backgroundColor: isActive ? 'rgba(220,38,38,0.85)' : 'rgba(100,100,100,0.6)', backdropFilter: 'blur(6px)' }}>
+        <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: '#fff', animation: isActive ? 'pulse 1.5s infinite' : 'none', '@keyframes pulse': { '0%,100%': { opacity: 1 }, '50%': { opacity: 0.35 } } }} />
+        <Typography sx={{ fontSize: '0.68rem', fontWeight: 700, color: '#fff', letterSpacing: '0.06em' }}>{isActive ? 'LIVE' : 'OFFLINE'}</Typography>
+      </Box>
+      <Radio size={36} color="rgba(0,132,143,0.5)" />
+      <Box sx={{ textAlign: 'center', zIndex: 1 }}>
+        <Typography sx={{ fontSize: '0.8rem', fontWeight: 600, color: 'rgba(255,255,255,0.55)', mb: 0.5 }}>
+          {isActive ? 'Đang phân tích luồng trực tiếp' : 'Chưa kết nối'}
+        </Typography>
+        <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)', fontFamily: 'monospace', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {source}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
 export default function Workspace() {
@@ -221,8 +311,14 @@ export default function Workspace() {
     ignoreDetection,
     explainMore,
     uploadAndConnect,
+    connectLive,
     resetAnalysis,
   } = useAnalysis();
+
+  // Source mode
+  const [sourceMode, setSourceMode] = useState<'file' | 'live'>('file');
+  const [liveSource, setLiveSource] = useState('');
+  const [isLiveConnecting, setIsLiveConnecting] = useState(false);
 
   // Local video state (object URL for <video> preview)
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -277,6 +373,18 @@ export default function Workspace() {
       setUploadProgress(0);
     }
   }, [uploadAndConnect]);
+
+  const handleLiveConnect = useCallback(async () => {
+    if (!liveSource.trim()) return;
+    setIsLiveConnecting(true);
+    try {
+      await connectLive(liveSource.trim());
+    } catch (err) {
+      console.warn('[workspace] live connect failed:', err);
+    } finally {
+      setIsLiveConnecting(false);
+    }
+  }, [liveSource, connectLive]);
 
   const handleStop = useCallback(() => {
     if (videoRef.current) {
@@ -343,22 +451,38 @@ export default function Workspace() {
               {/* Panel header */}
               <Box sx={{ px: 2.5, py: 1.5, borderBottom: '1px solid #E2EAE8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 700, color: 'text.primary' }}>
-                    Luồng video nội soi
-                  </Typography>
-                  {videoFile ? (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.25 }}>
-                      <FileVideo size={12} color="#006064" />
-                      <Typography variant="caption" sx={{ color: '#006064', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>
-                        {videoFile.name}
-                      </Typography>
-                      <Typography variant="caption" color="textDisabled">
-                        · {(videoFile.size / 1024 / 1024).toFixed(1)} MB
-                      </Typography>
-                    </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 0.25 }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700, color: 'text.primary' }}>
+                      Luồng video nội soi
+                    </Typography>
+                    <ToggleButtonGroup
+                      value={sourceMode}
+                      exclusive
+                      size="small"
+                      onChange={(_, v) => { if (v && v !== sourceMode) { resetAnalysis(); setVideoFile(null); setVideoUrl(null); setSourceMode(v); } }}
+                      sx={{ '& .MuiToggleButton-root': { py: 0.3, px: 1.25, fontSize: '0.72rem', fontWeight: 600, textTransform: 'none', borderRadius: '6px !important', border: '1px solid #E2EAE8 !important', '&.Mui-selected': { backgroundColor: 'rgba(0,96,100,0.1)', color: '#006064' } } }}
+                    >
+                      <ToggleButton value="file"><FileVideo size={12} style={{ marginRight: 4 }} />Tải video</ToggleButton>
+                      <ToggleButton value="live"><Wifi size={12} style={{ marginRight: 4 }} />Trực tiếp</ToggleButton>
+                    </ToggleButtonGroup>
+                  </Box>
+                  {sourceMode === 'file' ? (
+                    videoFile ? (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                        <FileVideo size={12} color="#006064" />
+                        <Typography variant="caption" sx={{ color: '#006064', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>
+                          {videoFile.name}
+                        </Typography>
+                        <Typography variant="caption" color="textDisabled">
+                          · {(videoFile.size / 1024 / 1024).toFixed(1)} MB
+                        </Typography>
+                      </Box>
+                    ) : (
+                      <Typography variant="caption" color="textSecondary">Chọn file video để bắt đầu phân tích</Typography>
+                    )
                   ) : (
                     <Typography variant="caption" color="textSecondary">
-                      Chọn file video để bắt đầu phân tích
+                      {isConnected ? `Đang kết nối: ${liveSource}` : 'Nhập địa chỉ RTSP hoặc thiết bị V4L2'}
                     </Typography>
                   )}
                 </Box>
@@ -384,7 +508,33 @@ export default function Workspace() {
 
               {/* Video content area */}
               <Box sx={{ p: 1.5 }}>
-                {isUploading ? (
+                {sourceMode === 'live' && !isConnected ? (
+                  <LiveInputZone value={liveSource} onChange={setLiveSource} onConnect={handleLiveConnect} isConnecting={isLiveConnecting} />
+                ) : sourceMode === 'live' && isConnected ? (
+                  <VideoContainer>
+                    <LiveStreamPanel source={liveSource} pipelineState={pipelineState} />
+                    {/* Detection overlays reuse same logic */}
+                    {pipelineState === 'PAUSED_WAITING_INPUT' && currentDetection && (
+                      <Box sx={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 4, px: 2, py: 1.25, backdropFilter: 'blur(14px)', backgroundColor: 'rgba(13,17,23,0.82)', borderTop: '1px solid rgba(245,158,11,0.25)', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
+                          <AlertTriangle size={14} color="#F59E0B" />
+                          <Typography sx={{ fontSize: '0.78rem', fontWeight: 700, color: '#FCD34D', whiteSpace: 'nowrap' }}>{currentDetection.label}</Typography>
+                          <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)' }}>{(currentDetection.confidence * 100).toFixed(0)}%</Typography>
+                        </Box>
+                        {voiceSupported && (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: isVoiceListening ? '#4FC3F7' : 'rgba(255,255,255,0.35)' }}>
+                            {isVoiceListening ? <Mic size={14} /> : <MicOff size={14} />}
+                            {isVoiceListening && voiceTranscript && (
+                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.6)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{voiceTranscript}</Typography>
+                            )}
+                          </Box>
+                        )}
+                        <MuiButton size="small" variant="outlined" onClick={explainMore} sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#0277BD', color: '#4FC3F7' } }}>Giải thích</MuiButton>
+                        <MuiButton size="small" variant="contained" onClick={ignoreDetection} sx={{ borderRadius: '7px', backgroundColor: 'rgba(245,158,11,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#F59E0B' } }}>Bỏ qua</MuiButton>
+                      </Box>
+                    )}
+                  </VideoContainer>
+                ) : isUploading ? (
                   <UploadingProgress fileName={videoFile?.name ?? ''} progress={uploadProgress} />
                 ) : videoUrl ? (
                   /* Real video player with detection overlay */

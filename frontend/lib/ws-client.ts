@@ -33,7 +33,21 @@ export type ClientAction =
   | { action: "ACTION_EXPLAIN" }
   | { action: "ACTION_RESUME" };
 
-// ── Upload helper ─────────────────────────────────────────────────────────────
+// ── Upload / connect helpers ──────────────────────────────────────────────────
+
+/**
+ * Register a live source (RTSP URL or device path) with the server.
+ * Returns a video_id that can be used to open a WebSocket session.
+ */
+export async function connectLiveStream(source: string): Promise<{ video_id: string }> {
+  const res = await fetch(`${API_BASE}/stream/connect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+  if (!res.ok) throw new Error(`Stream connect failed: ${res.statusText}`);
+  return res.json() as Promise<{ video_id: string }>;
+}
 
 /**
  * Upload a video file with optional progress callback (0–100).

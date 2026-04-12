@@ -14,6 +14,7 @@ import {
 import {
   EndoscopyWsClient,
   uploadVideo,
+  connectLiveStream,
   type DetectionData,
   type ServerEvent,
 } from "@/lib/ws-client";
@@ -53,6 +54,8 @@ interface AnalysisContextType {
   // ── actions ──
   /** Upload a video file to the server and obtain a videoId. */
   uploadAndConnect: (file: File, onProgress?: (pct: number) => void) => Promise<void>;
+  /** Register a live source (RTSP URL / device) and connect WebSocket. */
+  connectLive: (source: string) => Promise<void>;
   /** Start analysis on the current videoId (sends WS connection). */
   startMockAnalysis: () => void;
   ignoreDetection: () => void;
@@ -182,6 +185,13 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     connectWs(video_id);
   }, [connectWs]);
 
+  /** Register live source → get videoId → open WebSocket. */
+  const connectLive = useCallback(async (source: string) => {
+    const { video_id } = await connectLiveStream(source);
+    setVideoId(video_id);
+    connectWs(video_id);
+  }, [connectWs]);
+
   /** Fallback / demo: used when no real video is loaded yet. */
   const startMockAnalysis = useCallback(() => {
     if (videoId) {
@@ -295,6 +305,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       llmInsight,
       detections,
       uploadAndConnect,
+      connectLive,
       startMockAnalysis,
       ignoreDetection,
       explainMore,
@@ -306,7 +317,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     [
       isConnected, pipelineState, videoId, isPlaying,
       currentDetection, isListeningVoice, llmInsight, detections,
-      uploadAndConnect, startMockAnalysis, ignoreDetection,
+      uploadAndConnect, connectLive, startMockAnalysis, ignoreDetection,
       explainMore, resumePlayback, setIsPlaying, addDetection, resetAnalysis,
     ],
   );

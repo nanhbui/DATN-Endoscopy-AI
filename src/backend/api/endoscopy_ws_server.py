@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from voice_api import router as voice_router
@@ -118,6 +118,23 @@ async def upload_video(file: UploadFile = File(...)):
         "confirmed_detections": [],
     }
     return {"video_id": video_id, "filename": file.filename, "size_bytes": len(contents)}
+
+
+@app.post("/stream/connect")
+async def connect_stream(request: Request):
+    """Register a live source (RTSP URL or V4L2 device) and return a session video_id."""
+    body = await request.json()
+    source = body.get("source", "").strip()
+    if not source:
+        raise HTTPException(status_code=400, detail="'source' field is required")
+
+    video_id = uuid.uuid4().hex[:12]
+    _sessions[video_id] = {
+        "controller": None,
+        "video_path": source,   # GStreamer will receive this as the source URI
+        "confirmed_detections": [],
+    }
+    return {"video_id": video_id, "source": source}
 
 
 @app.get("/session/{video_id}/detections")

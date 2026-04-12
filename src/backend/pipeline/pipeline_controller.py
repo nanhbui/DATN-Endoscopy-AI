@@ -119,11 +119,28 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         result_q.put(_eos_event([]))
         return
 
-    pipeline_str = (
-        f'filesrc location="{video_path_str}" ! qtdemux name=d d.video_0 ! '
-        "queue ! h264parse ! avdec_h264 ! videoconvert ! "
-        "appsink name=sink sync=false max-buffers=2 drop=false"
-    )
+    _SINK_TAIL = "appsink name=sink sync=false max-buffers=2 drop=false"
+    _src = video_path_str
+    is_live = _src.startswith(("rtsp://", "rtp://", "rtmp://")) or _src.startswith("/dev/video")
+
+    if _src.startswith(("rtsp://", "rtp://", "rtmp://")):
+        pipeline_str = (
+            f'rtspsrc location="{_src}" latency=200 ! '
+            f"rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! {_SINK_TAIL}"
+        )
+    elif _src.startswith("/dev/video"):
+        pipeline_str = (
+            f'v4l2src device="{_src}" ! videoconvert ! {_SINK_TAIL}'
+        )
+    else:
+        is_live = False
+        pipeline_str = (
+            f'filesrc location="{_src}" ! qtdemux name=d d.video_0 ! '
+            f"queue ! h264parse ! avdec_h264 ! videoconvert ! {_SINK_TAIL}"
+        )
+
+    # Live sources have no blank-frame header — skip the initial-frame filter
+    _skip = 0 if is_live else SKIP_INITIAL_FRAMES
     gst_pipeline = Gst.parse_launch(pipeline_str)
     sink = gst_pipeline.get_by_name("sink")
     sink.set_property("emit-signals", False)
@@ -158,7 +175,7 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     def _is_diagnostic_frame(frame: np.ndarray, fi: int) -> bool:
         """Return False for non-diagnostic frames: scope insertion, dark frames, text-only cards."""
         # Skip scope insertion / title cards at the very start
-        if fi < SKIP_INITIAL_FRAMES:
+        if fi < _skip:
             return False
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

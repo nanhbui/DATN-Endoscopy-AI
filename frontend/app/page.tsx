@@ -6,8 +6,10 @@ import {
   Activity,
   ArrowRight,
   Brain,
+  ClipboardList,
   MessageSquareText,
   Play,
+  ScanSearch,
   UploadCloud,
 } from 'lucide-react';
 
@@ -219,6 +221,51 @@ export default function Home() {
               </Grid>
             ))}
           </Grid>
+        </Box>
+
+        {/* ── Detection report table ── */}
+        <Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2.5 }}>
+            <ClipboardList size={18} color="#006064" />
+            <Typography variant="h3" sx={{ fontSize: '1.25rem', fontWeight: 700, color: 'text.primary' }}>
+              Báo cáo phiên hiện tại
+            </Typography>
+          </Box>
+          <Box sx={{ backgroundColor: 'background.paper', borderRadius: '16px', border: '1px solid #E2EAE8', boxShadow: '0 2px 12px rgba(13,27,42,0.06)', overflow: 'hidden' }}>
+            {/* Table header */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr 2fr 1fr', px: 3, py: 1.5, backgroundColor: '#F8FAFB', borderBottom: '1px solid #E2EAE8' }}>
+              {['Thời điểm', 'Vị trí giải phẫu', 'Chẩn đoán AI', 'Độ tin cậy'].map((h) => (
+                <Typography key={h} variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', letterSpacing: '0.04em', textTransform: 'uppercase' }}>{h}</Typography>
+              ))}
+            </Box>
+
+            {detections.length === 0 ? (
+              <Box sx={{ py: 6, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5 }}>
+                <ScanSearch size={32} color="#C8D8D6" />
+                <Typography variant="body2" color="textSecondary">Chưa có phát hiện nào trong phiên này</Typography>
+                <Typography variant="caption" color="textDisabled">Tải video lên ở Workspace để bắt đầu phân tích</Typography>
+              </Box>
+            ) : (
+              <>
+                {detections.map((det, idx) => (
+                  <Box key={`row-${idx}`} sx={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr 2fr 1fr', px: 3, py: 1.75, alignItems: 'center', borderBottom: idx < detections.length - 1 ? '1px solid #F0F4F3' : 'none', '&:hover': { backgroundColor: '#F8FAFB' } }}>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary', fontWeight: 500 }}>{det.timestamp.toFixed(1)}s</Typography>
+                    <Typography variant="body2" color="textSecondary">{det.anatomicalLocation}</Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <ScanSearch size={14} color="#006064" />
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>{det.label}</Typography>
+                    </Box>
+                    <Box sx={{ display: 'inline-flex', alignItems: 'center', px: 1.25, py: 0.4, borderRadius: '6px', backgroundColor: 'rgba(46,125,50,0.08)', width: 'fit-content' }}>
+                      <Typography variant="caption" sx={{ fontWeight: 700, color: '#2E7D32' }}>{(det.confidence * 100).toFixed(0)}%</Typography>
+                    </Box>
+                  </Box>
+                ))}
+                <Box sx={{ px: 3, py: 1.75, borderTop: '1px solid #E2EAE8', backgroundColor: '#F8FAFB' }}>
+                  <Typography variant="caption" color="textSecondary">{detections.length} bản ghi · phiên hiện tại</Typography>
+                </Box>
+              </>
+            )}
+          </Box>
         </Box>
 
       </Container>
