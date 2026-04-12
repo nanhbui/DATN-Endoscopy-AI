@@ -25,6 +25,16 @@ gstshark_logs/
 gstshark_*/
 test_output/
 
+# Dataset & large media files (do not commit to git)
+data/raw/
+data/uploads/
+data/hyperkvasir_yolo/
+data/lab/
+*.mp4
+*.avi
+*.zip
+*.tar.gz
+
 # Temporary files
 *.log
 *.tmp
@@ -45,3 +55,5 @@ Thumbs.db
 *_backup*
 *.bak
 .env
+
+.claude
