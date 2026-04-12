@@ -35,12 +35,44 @@ export type ClientAction =
 
 // ── Upload helper ─────────────────────────────────────────────────────────────
 
-export async function uploadVideo(file: File): Promise<{ video_id: string }> {
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: form });
-  if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
-  return res.json();
+/**
+ * Upload a video file with optional progress callback (0–100).
+ * Uses XHR so we get real upload progress events.
+ */
+export function uploadVideo(
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<{ video_id: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const form = new FormData();
+    form.append("file", file);
+
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error("Invalid JSON response"));
+        }
+      } else {
+        reject(new Error(`Upload failed: ${xhr.statusText}`));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("Upload network error"));
+
+    xhr.open("POST", `${API_BASE}/upload`);
+    xhr.send(form);
+  });
 }
 
 // ── EndoscopyWsClient ─────────────────────────────────────────────────────────

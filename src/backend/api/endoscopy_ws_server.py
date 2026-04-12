@@ -31,12 +31,17 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
+from voice_api import router as voice_router
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 _HERE = Path(__file__).resolve()
+
+# Load .env from the same directory as this file (src/backend/api/.env)
+load_dotenv(_HERE.parent / ".env")
 _REPO_ROOT = _HERE.parents[3]
 
 # Support running from arbitrary directory (e.g. GPU server deployment)
@@ -74,6 +79,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(voice_router)
 
 # ── In-memory session registry ───────────────────────────────────────────────
 # video_id → { controller, video_path, confirmed_detections }

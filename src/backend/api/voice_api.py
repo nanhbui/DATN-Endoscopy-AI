@@ -1,80 +1,63 @@
-"""voice_api.py – FastAPI endpoints for voice command processing.
+"""voice_api.py — FastAPI router for voice command processing.
 
-Provides a single POST endpoint `/voice/command` that receives an audio file
-(in any common format, e.g. WAV, MP3) and returns the detected intent and the
-corresponding response message (skip confirmation or LLM explanation).
+POST /voice/command
+  Receives a browser MediaRecorder audio chunk (WebM/OPUS or WAV),
+  transcribes it with faster-whisper on the GPU, classifies the intent,
+  and returns the action for the frontend to execute.
 
-The endpoint uses the existing `VoiceController` implementation located in
-`src/voice/voice_controller.py`.  The controller is instantiated once at module
-import time – this is cheap because the Whisper model is lazy‑loaded inside the
-wrapper.
-
-Typical request from the frontend (React) looks like:
-```js
-const form = new FormData();
-form.append('audio', fileBlob);
-await fetch('/voice/command', {method: 'POST', body: form});
-```
-
-The response schema mirrors the internal `VoiceIntent` enum but is returned as
-plain strings for simplicity.
+Typical request from the frontend:
+  const form = new FormData();
+  form.append('audio', blob, 'chunk.webm');
+  await fetch(`${API_BASE}/voice/command`, { method: 'POST', body: form });
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
-from fastapi.responses import JSONResponse
+from __future__ import annotations
 
-# Import the controller – the path is relative to the repository root.
-# Adding the project root to `sys.path` is already done in `api_server.py`,
-# but we repeat it here to be safe when this module is imported directly.
+import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # project root
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi.responses import JSONResponse
 
-from src.voice.voice_controller import VoiceController, VoiceIntent
+# Ensure project root is on sys.path so src.voice imports work
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from src.voice.whisper_transcriber import WhisperTranscriber
+from src.voice.intent_classifier import IntentClassifier
 
 router = APIRouter()
 
-# Initialise a singleton controller.  Whisper will load the model on first use.
-_controller = VoiceController()
+# Singletons — model loaded once on first request, reused for all subsequent calls
+_transcriber = WhisperTranscriber(model_size="base")
+_classifier = IntentClassifier()
 
 
 @router.post("/voice/command", response_class=JSONResponse)
 async def voice_command(audio: UploadFile = File(...)):
-    """Process an uploaded audio chunk and return the detected intent.
+    """Transcribe audio chunk and return classified voice intent.
 
-    Parameters
-    ----------
-    audio: UploadFile
-        The raw audio file sent by the client.
+    Returns:
+        {
+          "transcript": "bỏ qua đi",
+          "intent": "bo_qua",       # bo_qua | giai_thich | xac_nhan | unknown
+          "confidence": 0.7
+        }
     """
-    if not audio.content_type.startswith("audio/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is not an audio type"
-        )
     try:
-        # Read the entire file into memory – audio chunks are small (<1 MB).
         audio_bytes = await audio.read()
-        intent, response_msg = _process(audio_bytes)
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "intent": intent.value,
-                "intent_label": intent.name,
-                "message": response_msg,
-            },
-        )
+        # Run blocking Whisper inference off the event loop thread
+        loop = asyncio.get_running_loop()
+        transcript = await loop.run_in_executor(None, _transcriber.transcribe, audio_bytes)
+        intent, confidence = _classifier.classify(transcript)
+        print(f"[Voice] '{transcript}' → {intent.value} ({confidence:.2f})")
+        return JSONResponse(content={
+            "transcript": transcript,
+            "intent": intent.name,          # "BO_QUA" | "GIAI_THICH" | "XAC_NHAN" | "UNKNOWN"
+            "confidence": round(confidence, 2),
+        })
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Voice processing failed: {exc}"
+            detail=f"Voice processing failed: {exc}",
         )
-
-
-def _process(audio_bytes: bytes):
-    """Delegate to the shared `VoiceController`.
-
-    Returns a tuple ``(VoiceIntent, str)`` where the string is the UI message.
-    """
-    return _controller.process_audio(audio_bytes)

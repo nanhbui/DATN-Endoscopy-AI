@@ -52,7 +52,7 @@ interface AnalysisContextType {
 
   // ── actions ──
   /** Upload a video file to the server and obtain a videoId. */
-  uploadAndConnect: (file: File) => Promise<void>;
+  uploadAndConnect: (file: File, onProgress?: (pct: number) => void) => Promise<void>;
   /** Start analysis on the current videoId (sends WS connection). */
   startMockAnalysis: () => void;
   ignoreDetection: () => void;
@@ -60,6 +60,8 @@ interface AnalysisContextType {
   resumePlayback: () => void;
   setIsPlaying: (v: boolean) => void;
   addDetection: (d: Detection) => void;
+  /** Clear all analysis state (call when video is removed). */
+  resetAnalysis: () => void;
 }
 
 const AnalysisContext = createContext<AnalysisContextType | undefined>(undefined);
@@ -171,8 +173,11 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   // ── Public actions ────────────────────────────────────────────────────────
 
   /** Upload file → get videoId → open WebSocket. */
-  const uploadAndConnect = useCallback(async (file: File) => {
-    const { video_id } = await uploadVideo(file);
+  const uploadAndConnect = useCallback(async (
+    file: File,
+    onProgress?: (pct: number) => void,
+  ) => {
+    const { video_id } = await uploadVideo(file, onProgress);
     setVideoId(video_id);
     connectWs(video_id);
   }, [connectWs]);
@@ -257,6 +262,19 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     setDetections((prev) => [d, ...prev]);
   }, []);
 
+  const resetAnalysis = useCallback(() => {
+    clearMockTimers();
+    wsRef.current?.disconnect();
+    wsRef.current = null;
+    setPipelineState("IDLE");
+    setIsConnected(false);
+    setVideoId(null);
+    setCurrentDetection(null);
+    setIsListeningVoice(false);
+    setLlmInsight("");
+    setDetections([]);
+  }, [clearMockTimers]);
+
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
@@ -283,12 +301,13 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       resumePlayback,
       setIsPlaying,
       addDetection,
+      resetAnalysis,
     }),
     [
       isConnected, pipelineState, videoId, isPlaying,
       currentDetection, isListeningVoice, llmInsight, detections,
       uploadAndConnect, startMockAnalysis, ignoreDetection,
-      explainMore, resumePlayback, setIsPlaying, addDetection,
+      explainMore, resumePlayback, setIsPlaying, addDetection, resetAnalysis,
     ],
   );
 

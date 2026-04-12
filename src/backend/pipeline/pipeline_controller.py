@@ -40,6 +40,12 @@ else:
 
 CONFIDENCE_THRESHOLD = 0.50   # higher threshold for medical use
 
+# Skip this many frames at the start of every video (scope insertion / title cards)
+SKIP_INITIAL_FRAMES = 90   # ≈ 3 s at 30 fps
+
+# Process every Nth frame to reduce redundant detections on the same lesion
+FRAME_STEP = 3
+
 
 # ── Pipeline States ──────────────────────────────────────────────────────────
 
@@ -149,6 +155,34 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
             return "Hang vị"
         return "Môn vị"
 
+    def _is_diagnostic_frame(frame: np.ndarray, fi: int) -> bool:
+        """Return False for non-diagnostic frames: scope insertion, dark frames, text-only cards."""
+        # Skip scope insertion / title cards at the very start
+        if fi < SKIP_INITIAL_FRAMES:
+            return False
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+
+        # Endoscopy viewport is a bright circle on a black border.
+        # If < 15 % of pixels are bright the scope is being inserted/withdrawn.
+        bright_frac = float(np.sum(gray > 25)) / (h * w)
+        if bright_frac < 0.15:
+            return False
+
+        # Center region must have some content (not completely dark center)
+        cy, cx = h // 2, w // 2
+        rh, rw = h // 6, w // 6
+        center_mean = float(gray[cy - rh: cy + rh, cx - rw: cx + rw].mean())
+        if center_mean < 18:
+            return False
+
+        # Skip near-uniform frames (low variance → washed-out / all-black / all-white)
+        if float(gray.std()) < 12:
+            return False
+
+        return True
+
     def _crop_b64(frame: np.ndarray, bbox: list) -> Optional[str]:
         try:
             x1, y1, x2, y2 = map(int, bbox)
@@ -228,9 +262,10 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
             else:
                 frame = raw.reshape(h, w, 3)
 
-            # YOLO inference
-            timestamp_ms = int(frame_index * 1000 / 30)
-            if model is not None:
+            # Use GStreamer PTS for accurate timestamp; fall back to frame counter
+            pts = buf.pts
+            timestamp_ms = int(pts / 1_000_000) if pts != Gst.CLOCK_TIME_NONE else int(frame_index * 1000 / 30)
+            if model is not None and frame_index % FRAME_STEP == 0 and _is_diagnostic_frame(frame, frame_index):
                 try:
                     results = model(frame, conf=conf, verbose=False)
                     for result in results:

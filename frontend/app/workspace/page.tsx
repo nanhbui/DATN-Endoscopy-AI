@@ -1,13 +1,13 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion as framMotion } from 'framer-motion';
 import {
   AlertTriangle,
   Bot,
   CircleX,
   FileVideo,
-  Loader2,
+  Mic,
   MicOff,
   Play,
   Square,
@@ -15,6 +15,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useAnalysis } from '@/context/AnalysisContext';
+import { useVoiceControl } from '@/hooks/use-voice-control';
 
 import Box from '@mui/material/Box';
 import Grid from '@mui/material/Grid';
@@ -179,20 +180,11 @@ function UploadingProgress({ fileName, progress }: { fileName: string; progress:
         px: 6,
       }}
     >
-      <Box
-        sx={{
-          width: 56,
-          height: 56,
-          borderRadius: '50%',
-          border: '2px solid rgba(0,96,100,0.3)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#00838F',
-        }}
-      >
-        <Loader2 size={26} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-      </Box>
+      <CircularProgress
+        size={52}
+        thickness={3}
+        sx={{ color: '#00838F' }}
+      />
       <Box sx={{ width: '100%', maxWidth: 320, textAlign: 'center' }}>
         <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.6)', mb: 1.5, display: 'block' }}>
           Đang tải · {fileName}
@@ -228,44 +220,82 @@ export default function Workspace() {
     startMockAnalysis,
     ignoreDetection,
     explainMore,
-    resumePlayback,
     uploadAndConnect,
-    setIsPlaying,
+    resetAnalysis,
   } = useAnalysis();
 
   // Local video state (object URL for <video> preview)
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Seek video to detection frame so bbox aligns with what's on screen
+  useEffect(() => {
+    if (currentDetection && videoRef.current) {
+      videoRef.current.currentTime = currentDetection.timestamp;
+    }
+  }, [currentDetection]);
+
+  // Voice control — auto-activates mic when detection pauses pipeline
+  const { isListening: isVoiceListening, transcript: voiceTranscript, supported: voiceSupported, startListening, stopListening } =
+    useVoiceControl({
+      onIntent: (intent) => {
+        if (intent === 'BO_QUA') ignoreDetection();
+        else if (intent === 'GIAI_THICH') explainMore();
+        // XAC_NHAN / UNKNOWN: no automatic action
+      },
+    });
+
+  useEffect(() => {
+    if (pipelineState === 'PAUSED_WAITING_INPUT' && voiceSupported) {
+      startListening();
+    } else {
+      stopListening();
+    }
+  }, [pipelineState, voiceSupported, startListening, stopListening]);
 
   /** Upload to backend + connect WebSocket, keep local preview URL. */
   const handleFileSelected = useCallback(async (file: File) => {
     setVideoFile(file);
     setIsUploading(true);
+    setUploadProgress(0);
 
     // Local preview immediately — no waiting for server
     const localUrl = URL.createObjectURL(file);
     setVideoUrl(localUrl);
 
     try {
-      // Real upload + WS connect (falls back gracefully if server offline)
-      await uploadAndConnect(file);
+      await uploadAndConnect(file, setUploadProgress);
+      // Pipeline is now running on the server — play the local preview too
+      videoRef.current?.play().catch(() => {/* autoplay blocked — user can click play manually */});
     } catch (err) {
-      // Server offline — FE still works with mock pipeline
       console.warn("[workspace] backend offline, using mock pipeline:", err);
     } finally {
       setIsUploading(false);
+      setUploadProgress(0);
     }
   }, [uploadAndConnect]);
 
+  const handleStop = useCallback(() => {
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.currentTime = 0;
+    }
+    resetAnalysis();
+  }, [resetAnalysis]);
+
   const handleRemoveVideo = useCallback(() => {
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoFile(null);
     setVideoUrl(null);
     setIsUploading(false);
-    setIsPlaying(false);
-  }, [videoUrl, setIsPlaying]);
+    resetAnalysis();
+  }, [videoUrl, resetAnalysis]);
 
   // ── Status badge config ────────────────────────────────────────────────────
 
@@ -283,7 +313,7 @@ export default function Workspace() {
               : { text: 'Chờ video', color: '#9AA5B1', bg: 'rgba(154,165,177,0.1)', textColor: '#4A5568' };
 
   return (
-    <Box sx={{ minHeight: 'calc(100vh - 130px)', py: 4, px: { xs: 2, lg: 4 }, backgroundColor: 'background.default' }}>
+    <Box sx={{ minHeight: 'calc(100vh - 130px)', py: 3, px: { xs: 1.5, lg: 3 }, backgroundColor: 'background.default' }}>
       <Box sx={{ maxWidth: '1440px', mx: 'auto' }}>
 
         {/* Page header */}
@@ -299,7 +329,7 @@ export default function Workspace() {
         <Grid container spacing={3}>
 
           {/* ── Video Panel ────────────────────────────────────────────────── */}
-          <Grid item xs={12} lg={7}>
+          <Grid item xs={12} lg={8}>
             <Box
               sx={{
                 backgroundColor: 'background.paper',
@@ -311,7 +341,7 @@ export default function Workspace() {
               }}
             >
               {/* Panel header */}
-              <Box sx={{ px: 3, py: 2, borderBottom: '1px solid #E2EAE8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
+              <Box sx={{ px: 2.5, py: 1.5, borderBottom: '1px solid #E2EAE8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="subtitle1" sx={{ fontWeight: 700, color: 'text.primary' }}>
                     Luồng video nội soi
@@ -353,9 +383,9 @@ export default function Workspace() {
               </Box>
 
               {/* Video content area */}
-              <Box sx={{ p: 2.5 }}>
+              <Box sx={{ p: 1.5 }}>
                 {isUploading ? (
-                  <UploadingProgress fileName={videoFile?.name ?? ''} progress={0} />
+                  <UploadingProgress fileName={videoFile?.name ?? ''} progress={uploadProgress} />
                 ) : videoUrl ? (
                   /* Real video player with detection overlay */
                   <VideoContainer>
@@ -372,6 +402,69 @@ export default function Workspace() {
                         zIndex: 1,
                       }}
                     />
+                    {/* Detection action bar — shown when pipeline is paused */}
+                    {pipelineState === 'PAUSED_WAITING_INPUT' && currentDetection && (
+                      <Box
+                        sx={{
+                          position: 'absolute',
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          zIndex: 4,
+                          px: 2,
+                          py: 1.25,
+                          backdropFilter: 'blur(14px)',
+                          backgroundColor: 'rgba(13,17,23,0.82)',
+                          borderTop: '1px solid rgba(245,158,11,0.25)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.5,
+                        }}
+                      >
+                        {/* Detection label */}
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
+                          <AlertTriangle size={14} color="#F59E0B" />
+                          <Typography sx={{ fontSize: '0.78rem', fontWeight: 700, color: '#FCD34D', whiteSpace: 'nowrap' }}>
+                            {currentDetection.label}
+                          </Typography>
+                          <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)' }}>
+                            {(currentDetection.confidence * 100).toFixed(0)}%
+                          </Typography>
+                        </Box>
+                        {/* Mic status indicator */}
+                        {voiceSupported && (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: isVoiceListening ? '#4FC3F7' : 'rgba(255,255,255,0.35)' }}>
+                            {isVoiceListening
+                              ? <Mic size={14} />
+                              : <MicOff size={14} />
+                            }
+                            {isVoiceListening && voiceTranscript && (
+                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.6)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {voiceTranscript}
+                              </Typography>
+                            )}
+                          </Box>
+                        )}
+                        {/* Action buttons */}
+                        <MuiButton
+                          size="small"
+                          variant="outlined"
+                          onClick={explainMore}
+                          sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#0277BD', color: '#4FC3F7' } }}
+                        >
+                          Giải thích
+                        </MuiButton>
+                        <MuiButton
+                          size="small"
+                          variant="contained"
+                          onClick={ignoreDetection}
+                          sx={{ borderRadius: '7px', backgroundColor: 'rgba(245,158,11,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#F59E0B' } }}
+                        >
+                          Bỏ qua
+                        </MuiButton>
+                      </Box>
+                    )}
+
                     {/* AI bbox overlay on top of video */}
                     {currentDetection && (
                       <BboxOverlay
@@ -424,7 +517,7 @@ export default function Workspace() {
           </Grid>
 
           {/* ── Control Panel ───────────────────────────────────────────────── */}
-          <Grid item xs={12} lg={5}>
+          <Grid item xs={12} lg={4}>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, height: '100%' }}>
 
               {/* Upload / Playback controls */}
@@ -475,25 +568,21 @@ export default function Workspace() {
                     <MuiButton
                       variant="contained"
                       fullWidth
-                      disabled={isUploading || pipelineState === 'EOS_SUMMARY'}
+                      disabled={isUploading || isPlaying || pipelineState === 'EOS_SUMMARY'}
                       onClick={() => {
-                        if (isConnected) {
-                          // Already connected: resume if paused, otherwise reconnect
-                          if (pipelineState === 'PAUSED_WAITING_INPUT') resumePlayback();
-                          else if (!isPlaying) startMockAnalysis();
-                        } else {
-                          startMockAnalysis();
-                        }
+                        startMockAnalysis();
+                        videoRef.current?.play().catch(() => {});
                       }}
-                      startIcon={isPlaying ? <Play size={17} /> : <Play size={17} />}
+                      startIcon={<Play size={17} />}
                       sx={{ borderRadius: '10px', py: 1.25, fontWeight: 700, fontSize: '0.875rem' }}
                     >
-                      {isConnected ? 'AI Live' : 'Chạy Mock'}
+                      {pipelineState === 'EOS_SUMMARY' ? 'Hoàn tất' : isPlaying ? 'Đang phân tích…' : 'Bắt đầu AI'}
                     </MuiButton>
                     <MuiButton
                       variant="outlined"
                       fullWidth
-                      onClick={() => setIsPlaying(false)}
+                      disabled={!isPlaying && pipelineState === 'IDLE'}
+                      onClick={handleStop}
                       startIcon={<Square size={17} />}
                       sx={{
                         borderRadius: '10px',
