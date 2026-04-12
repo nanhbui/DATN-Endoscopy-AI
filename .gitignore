@@ -29,7 +29,9 @@ test_output/
 data/raw/
 data/uploads/
 data/hyperkvasir_yolo/
+data/llava_finetune/
 data/lab/
+outputs/
 *.mp4
 *.avi
 *.zip
