@@ -186,7 +186,7 @@ export default function Home() {
           </Typography>
           <Grid container spacing={2.5}>
             {workflowFeatures.map((feature, idx) => (
-              <Grid item xs={12} md={4} key={feature.title}>
+              <Grid size={{ xs: 12, md: 4 }} key={feature.title}>
                 <MotionBox
                   initial={{ opacity: 0, y: 14 }}
                   animate={{ opacity: 1, y: 0 }}

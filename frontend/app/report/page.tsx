@@ -95,7 +95,7 @@ export default function ReportPage() {
           {detections.map((det, idx) => {
             const sev = getSeverity(det.confidence);
             return (
-              <Grid item xs={12} md={4} key={`${det.label}-${idx}`}>
+              <Grid size={{ xs: 12, md: 4 }} key={`${det.label}-${idx}`}>
                 <MotionBox
                   initial={{ opacity: 0, y: 16 }}
                   animate={{ opacity: 1, y: 0 }}

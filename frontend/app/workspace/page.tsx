@@ -437,7 +437,7 @@ export default function Workspace() {
         <Grid container spacing={3}>
 
           {/* ── Video Panel ────────────────────────────────────────────────── */}
-          <Grid item xs={12} lg={8}>
+          <Grid size={{ xs: 12, lg: 8 }}>
             <Box
               sx={{
                 backgroundColor: 'background.paper',
@@ -667,7 +667,7 @@ export default function Workspace() {
           </Grid>
 
           {/* ── Control Panel ───────────────────────────────────────────────── */}
-          <Grid item xs={12} lg={4}>
+          <Grid size={{ xs: 12, lg: 4 }}>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, height: '100%' }}>
 
               {/* Upload / Playback controls */}

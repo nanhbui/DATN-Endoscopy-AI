@@ -1,0 +1,34 @@
+# ── Stage 1: Dependencies ─────────────────────────────────────────────────────
+FROM node:20-alpine AS deps
+
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --omit=dev
+
+# ── Stage 2: Builder ──────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY frontend/ .
+
+# NEXT_PUBLIC_API_BASE is baked into the static build at build time.
+# Override with --build-arg if the backend URL differs from the default.
+ARG NEXT_PUBLIC_API_BASE=http://backend:8001
+ENV NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE}
+
+RUN npm run build
+
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
+FROM node:20-alpine AS runtime
+
+ENV NODE_ENV=production \
+    LOG_LEVEL=info
+
+WORKDIR /app
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+
+EXPOSE 3000
+CMD ["node", "server.js"]

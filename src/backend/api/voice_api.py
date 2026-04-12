@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 # Ensure project root is on sys.path so src.voice imports work
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from logger import logger  # noqa: E402
 from src.voice.whisper_transcriber import WhisperTranscriber
 from src.voice.intent_classifier import IntentClassifier
 
@@ -50,7 +51,7 @@ async def voice_command(audio: UploadFile = File(...)):
         loop = asyncio.get_running_loop()
         transcript = await loop.run_in_executor(None, _transcriber.transcribe, audio_bytes)
         intent, confidence = _classifier.classify(transcript)
-        print(f"[Voice] '{transcript}' → {intent.value} ({confidence:.2f})")
+        logger.info("Voice: '{}' → {} ({:.2f})", transcript, intent.name, confidence)
         return JSONResponse(content={
             "transcript": transcript,
             "intent": intent.name,          # "BO_QUA" | "GIAI_THICH" | "XAC_NHAN" | "UNKNOWN"

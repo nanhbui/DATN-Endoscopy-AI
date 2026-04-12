@@ -40,8 +40,10 @@ from voice_api import router as voice_router
 # ── Path setup ───────────────────────────────────────────────────────────────
 _HERE = Path(__file__).resolve()
 
-# Load .env from the same directory as this file (src/backend/api/.env)
+# Load .env before importing logger (LOG_LEVEL may be set there)
 load_dotenv(_HERE.parent / ".env")
+
+from logger import logger  # noqa: E402 — must come after load_dotenv
 _REPO_ROOT = _HERE.parents[3]
 
 # Support running from arbitrary directory (e.g. GPU server deployment)
@@ -117,6 +119,7 @@ async def upload_video(file: UploadFile = File(...)):
         "video_path": dest,
         "confirmed_detections": [],
     }
+    logger.info("Video uploaded: {} ({:.1f} MB) → session {}", file.filename, len(contents) / 1_048_576, video_id)
     return {"video_id": video_id, "filename": file.filename, "size_bytes": len(contents)}
 
 
@@ -134,6 +137,7 @@ async def connect_stream(request: Request):
         "video_path": source,   # GStreamer will receive this as the source URI
         "confirmed_detections": [],
     }
+    logger.info("Live stream registered: {} → session {}", source, video_id)
     return {"video_id": video_id, "source": source}
 
 
@@ -162,6 +166,7 @@ async def ws_analysis(websocket: WebSocket, video_id: str):
         return
 
     # Create and start pipeline controller
+    logger.info("WS connected: session {}", video_id)
     ctrl = PipelineController(video_id=video_id)
     sess["controller"] = ctrl
     ctrl.set_loop(asyncio.get_running_loop())

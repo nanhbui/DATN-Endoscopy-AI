@@ -1,0 +1,52 @@
+# ── Stage 1: Python deps ───────────────────────────────────────────────────────
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# GStreamer + Python + ffmpeg (for Whisper audio decoding)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3-pip python3-gi \
+    gstreamer1.0-tools \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav \
+    python3-gst-1.0 \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libglib2.0-0 \
+    ffmpeg \
+    portaudio19-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# ── Stage 2: Runtime image ────────────────────────────────────────────────────
+FROM builder AS runtime
+
+WORKDIR /app
+
+# Copy source
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+
+# Default env (overridden by docker-compose env_file)
+ENV HOST=0.0.0.0 \
+    PORT=8001 \
+    LOG_LEVEL=INFO \
+    ENDOSCOPY_UPLOAD_DIR=/app/data/uploads \
+    PIPELINE_DIR=/app/src/backend/pipeline
+
+# Upload dir
+RUN mkdir -p /app/data/uploads
+
+EXPOSE 8001
+
+# Run from the api directory so local imports (voice_api, logger, pipeline_controller) resolve correctly
+WORKDIR /app/src/backend/api
+CMD uvicorn endoscopy_ws_server:app --host ${HOST} --port ${PORT} --workers 1

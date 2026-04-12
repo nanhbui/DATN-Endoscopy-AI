@@ -1,0 +1,85 @@
+version: '3.9'
+
+# ── Endoscopy AI Pipeline — Docker Compose ────────────────────────────────────
+#
+# Usage:
+#   cp src/backend/api/.env.example src/backend/api/.env  # fill in OPENAI_API_KEY
+#   cp frontend/.env.local.example frontend/.env.local
+#   docker compose up --build
+#
+# GPU (NVIDIA):
+#   Requires nvidia-container-toolkit installed on the host.
+#   Run: sudo apt install nvidia-container-toolkit && sudo systemctl restart docker
+#
+# CPU-only fallback: comment out the `deploy` block under `backend`.
+
+services:
+
+  # ── FastAPI + GStreamer + YOLO backend ──────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: endoscopy-backend:latest
+    container_name: endoscopy-backend
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file:
+      - src/backend/api/.env
+    environment:
+      - ENDOSCOPY_UPLOAD_DIR=/app/data/uploads
+      - PIPELINE_DIR=/app/src/backend/pipeline
+      - LOG_LEVEL=INFO
+    volumes:
+      - uploads:/app/data/uploads
+      - ./sample_code:/app/sample_code:ro   # YOLO model files (read-only)
+      - backend_logs:/app/src/backend/api/logs
+    # GPU access — requires nvidia-container-toolkit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Next.js frontend ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # Backend is reachable via Docker internal network at http://backend:8001
+        # For the browser, WebSocket connections use the host-mapped port (8001).
+        NEXT_PUBLIC_API_BASE: http://localhost:8001
+    image: endoscopy-frontend:latest
+    container_name: endoscopy-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - frontend/.env.local
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+    volumes:
+      - frontend_logs:/app/logs
+    depends_on:
+      backend:
+        condition: service_healthy
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  uploads:
+    driver: local
+  backend_logs:
+    driver: local
+  frontend_logs:
+    driver: local
