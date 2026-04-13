@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export function middleware(request: NextRequest): NextResponse {
+export function proxy(request: NextRequest): NextResponse {
   const start = Date.now();
   const response = NextResponse.next();
   const duration = Date.now() - start;
 
-  // Skip static assets and Next.js internals
   const { pathname } = request.nextUrl;
   if (
     pathname.startsWith('/_next') ||

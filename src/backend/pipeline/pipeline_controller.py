@@ -27,6 +27,18 @@ import multiprocessing as _mp
 # ── Subprocess spawn context (avoids CUDA fork issues) ────────────────────────
 _mp_ctx = _mp.get_context("spawn")
 
+# ── GstShark profiling (optional) ────────────────────────────────────────────
+# Set ENABLE_GSTSHARK_PROFILING=true and GSTSHARK_PLUGIN_PATH in .env to enable.
+# GstShark tracers write CSV logs to GSTSHARK_LOG_DIR (default: /tmp/gst-shark/).
+_GSTSHARK_ENABLED = _os.environ.get("ENABLE_GSTSHARK_PROFILING", "false").lower() == "true"
+_GSTSHARK_PLUGIN_PATH = _os.environ.get(
+    "GSTSHARK_PLUGIN_PATH",
+    str(Path.home() / "DATN_ver0/gst-shark-install/lib/gstreamer-1.0"),
+)
+_GSTSHARK_LOG_DIR = _os.environ.get("GSTSHARK_LOG_DIR", "/tmp/gst-shark")
+# Tracers to activate — framerate, proctime, interlatency, queuelevel, cpuusage
+_GSTSHARK_TRACERS = _os.environ.get("GSTSHARK_TRACERS", "framerate;proctime;interlatency")
+
 # ── Default YOLO model path ──────────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -83,13 +95,37 @@ def _state_event(state: PipelineState) -> dict:
 # ── Subprocess worker (GStreamer + YOLO, no asyncio) ──────────────────────────
 
 def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
-                     result_q: "_mp.Queue[dict]", cmd_q: "_mp.Queue[str]") -> None:
+                     result_q: "_mp.Queue[dict]", cmd_q: "_mp.Queue[str]",
+                     gstshark_enabled: bool = False,
+                     gstshark_plugin_path: str = "",
+                     gstshark_log_dir: str = "/tmp/gst-shark",
+                     gstshark_tracers: str = "framerate;proctime;interlatency") -> None:
     """Runs in isolated subprocess: GStreamer decode + YOLO inference.
 
     Sends detection/state events to result_q.
     Receives commands from cmd_q: STOP | RESUME | IGNORE:<fi>:<json>
     """
     import numpy as np
+
+    # ── GstShark env injection (must happen before gi/Gst import) ────────────
+    if gstshark_enabled and gstshark_plugin_path:
+        import pathlib
+        log_dir = pathlib.Path(gstshark_log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        existing_plugin_path = _os.environ.get("GST_PLUGIN_PATH", "")
+        _os.environ["GST_PLUGIN_PATH"] = (
+            f"{gstshark_plugin_path}:{existing_plugin_path}".rstrip(":")
+        )
+        existing_ld = _os.environ.get("LD_LIBRARY_PATH", "")
+        shark_lib = str(pathlib.Path(gstshark_plugin_path).parent)
+        _os.environ["LD_LIBRARY_PATH"] = f"{shark_lib}:{existing_ld}".rstrip(":")
+        _os.environ["GST_TRACERS"] = gstshark_tracers
+        _os.environ["GST_DEBUG"] = "GST_TRACER:7"
+        _os.environ["SHARK_FRAMERATE_LOGDIR"] = str(log_dir)
+        _os.environ["SHARK_PROCTIME_LOGDIR"] = str(log_dir)
+        _os.environ["SHARK_INTERLATENCY_LOGDIR"] = str(log_dir)
+        print(f"[Worker] GstShark profiling ON → tracers={gstshark_tracers} log={log_dir}", flush=True)
     import cv2
     import base64
     import json as _json
@@ -381,7 +417,9 @@ class PipelineController:
         self._proc = _mp_ctx.Process(
             target=_pipeline_worker,
             args=(str(video_path), str(self._model_path), CONFIDENCE_THRESHOLD,
-                  self._result_q, self._cmd_q),
+                  self._result_q, self._cmd_q,
+                  _GSTSHARK_ENABLED, _GSTSHARK_PLUGIN_PATH,
+                  _GSTSHARK_LOG_DIR, _GSTSHARK_TRACERS),
             daemon=True,
         )
         self._proc.start()
