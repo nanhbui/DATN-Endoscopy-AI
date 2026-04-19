@@ -1,16 +1,3 @@
-"""pipeline_controller.py — GStreamer pipeline state machine.
-
-Architecture (SYSTEM_REQUIREMENTS §2):
-  GStreamer + YOLO run in a SUBPROCESS (process isolation prevents
-  GLib-thread / CUDA conflict that causes hangs when both run in-process).
-
-  Subprocess: filesrc ! decodebin ! appsink → YOLO inference → result Queue
-  Main process: bridge thread reads Queue → asyncio.Queue → FastAPI WS server
-
-States (§3):
-  IDLE → PLAYING → PAUSED_WAITING_INPUT → PROCESSING_LLM → EOS_SUMMARY
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -50,13 +37,15 @@ else:
     if not DEFAULT_MODEL.exists():
         DEFAULT_MODEL = _REPO_ROOT / "yolov8n.pt"
 
-CONFIDENCE_THRESHOLD = 0.50   # higher threshold for medical use
+CONFIDENCE_THRESHOLD = 0.65   # higher threshold reduces false positives
 
 # Skip this many frames at the start of every video (scope insertion / title cards)
 SKIP_INITIAL_FRAMES = 90   # ≈ 3 s at 30 fps
 
-# Process every Nth frame to reduce redundant detections on the same lesion
-FRAME_STEP = 3
+# Process every Nth frame — set higher on CPU to avoid multi-hour wait
+# GPU server: 3 (fast)  |  Local CPU: 30 (1 frame/sec at 30fps)
+import os as _os_frame
+FRAME_STEP = int(_os_frame.environ.get("FRAME_STEP", "3"))
 
 
 # ── Pipeline States ──────────────────────────────────────────────────────────
@@ -134,13 +123,22 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     model = None
     model_names = {}
     try:
+        import torch
         from ultralytics import YOLO
         model = YOLO(model_path_str)
         model_names = model.names or {}
-        # Warm-up: forces full CUDA init before GStreamer starts its threads
-        dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+
+        # Use FP16 on CUDA for ~2x faster inference; fall back to FP32 on CPU.
+        if torch.cuda.is_available():
+            model.half()
+            print("[Worker] YOLO FP16 (CUDA)", flush=True)
+        else:
+            print("[Worker] YOLO FP32 (CPU)", flush=True)
+
+        # Warm-up at YOLO input size (640px) to fully initialize CUDA kernels.
+        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
         model(dummy, verbose=False, conf=0.99)
-        print("[Worker] YOLO + GPU warm-up done", flush=True)
+        print("[Worker] YOLO warm-up done", flush=True)
     except Exception as exc:
         print(f"[Worker] YOLO load/warm-up failed: {exc}", flush=True)
 
@@ -155,24 +153,46 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         result_q.put(_eos_event([]))
         return
 
-    _SINK_TAIL = "appsink name=sink sync=false max-buffers=2 drop=false"
+    # Request BGR directly from GStreamer — eliminates all Python format detection.
+    # videoscale down to YOLO input size (640px wide) before appsink saves YOLO prep time.
+    # max-buffers=4 + drop=true: GStreamer drops stale frames instead of stalling when YOLO is busy.
+    _SCALE   = "videoscale ! video/x-raw,width=640,pixel-aspect-ratio=1/1 ! videoconvert"
+    _SINK_CAPS = "video/x-raw,format=BGR"
+    _SINK_TAIL = f"appsink name=sink sync=false max-buffers=4 drop=true caps={_SINK_CAPS}"
+
     _src = video_path_str
     is_live = _src.startswith(("rtsp://", "rtp://", "rtmp://")) or _src.startswith("/dev/video")
+
+    # Try NVIDIA hardware decoder first; fall back to software (avdec_h264).
+    # nvh264dec offloads decoding to NVDEC engine — frees GPU cores for YOLO.
+    def _has_nvdec() -> bool:
+        try:
+            _test = Gst.ElementFactory.make("nvh264dec", None)
+            return _test is not None
+        except Exception:
+            return False
+
+    _use_nvdec = _has_nvdec()
+    _h264dec = "nvh264dec" if _use_nvdec else "avdec_h264"
+    print(f"[Worker] H.264 decoder: {_h264dec}", flush=True)
+
+    # Queue with leaky=downstream prevents GStreamer from stalling when appsink is busy.
+    _QUEUE = "queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 leaky=downstream"
 
     if _src.startswith(("rtsp://", "rtp://", "rtmp://")):
         pipeline_str = (
             f'rtspsrc location="{_src}" latency=200 ! '
-            f"rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! {_SINK_TAIL}"
+            f"rtph264depay ! h264parse ! {_h264dec} ! {_QUEUE} ! {_SCALE} ! {_SINK_TAIL}"
         )
     elif _src.startswith("/dev/video"):
         pipeline_str = (
-            f'v4l2src device="{_src}" ! videoconvert ! {_SINK_TAIL}'
+            f'v4l2src device="{_src}" ! {_QUEUE} ! {_SCALE} ! {_SINK_TAIL}'
         )
     else:
         is_live = False
+        # decodebin handles any container/codec — more robust than hardcoded qtdemux+h264parse
         pipeline_str = (
-            f'filesrc location="{_src}" ! qtdemux name=d d.video_0 ! '
-            f"queue ! h264parse ! avdec_h264 ! videoconvert ! {_SINK_TAIL}"
+            f'filesrc location="{_src}" ! decodebin ! {_QUEUE} ! {_SCALE} ! {_SINK_TAIL}'
         )
 
     # Live sources have no blank-frame header — skip the initial-frame filter
@@ -290,30 +310,18 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                     break
                 continue
 
-            # Decode to BGR
+            # GStreamer outputs BGR directly (negotiated via caps) — no conversion needed.
             buf = sample.get_buffer()
             caps = sample.get_caps()
             struct = caps.get_structure(0)
             w = struct.get_value("width")
             h = struct.get_value("height")
-            fmt = struct.get_value("format")
             ok, mapinfo = buf.map(Gst.MapFlags.READ)
             if not ok:
                 continue
             raw = np.frombuffer(mapinfo.data, dtype=np.uint8).copy()
             buf.unmap(mapinfo)
-
-            if fmt == "I420":
-                yuv = raw.reshape((h * 3 // 2, w))
-                frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
-            elif fmt in ("NV12", "NV21"):
-                yuv = raw.reshape((h * 3 // 2, w))
-                code = cv2.COLOR_YUV2BGR_NV12 if fmt == "NV12" else cv2.COLOR_YUV2BGR_NV21
-                frame = cv2.cvtColor(yuv, code)
-            elif fmt == "RGB":
-                frame = cv2.cvtColor(raw.reshape(h, w, 3), cv2.COLOR_RGB2BGR)
-            else:
-                frame = raw.reshape(h, w, 3)
+            frame = raw.reshape(h, w, 3)  # already BGR
 
             # Use GStreamer PTS for accurate timestamp; fall back to frame counter
             pts = buf.pts

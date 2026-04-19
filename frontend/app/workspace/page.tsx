@@ -326,6 +326,8 @@ export default function Workspace() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [transcriptLog, setTranscriptLog] = useState<{ text: string; ts: number }[]>([]);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Seek video to detection frame so bbox aligns with what's on screen
   useEffect(() => {
@@ -334,23 +336,37 @@ export default function Workspace() {
     }
   }, [currentDetection]);
 
-  // Voice control — auto-activates mic when detection pauses pipeline
-  const { isListening: isVoiceListening, transcript: voiceTranscript, supported: voiceSupported, startListening, stopListening } =
+  // Auto-pause / resume local video preview in sync with pipeline state
+  useEffect(() => {
+    if (!videoRef.current || !videoUrl) return;
+    if (pipelineState === 'PAUSED_WAITING_INPUT' || pipelineState === 'PROCESSING_LLM') {
+      videoRef.current.pause();
+    } else if (pipelineState === 'PLAYING') {
+      videoRef.current.play().catch(() => {});
+    }
+  }, [pipelineState, videoUrl]);
+
+  // Ref so onIntent callback always reads current state without stale closure
+  const pipelineStateRef = useRef(pipelineState);
+  pipelineStateRef.current = pipelineState;
+
+  const { isListening: isVoiceListening, audioLevel, supported: voiceSupported, micError, startListening, stopListening } =
     useVoiceControl({
-      onIntent: (intent) => {
+      onIntent: useCallback((intent: import('@/hooks/use-voice-control').VoiceIntent, transcript: string) => {
+        console.log("[Workspace] onIntent:", { intent, transcript, pipelineState: pipelineStateRef.current });
+        if (transcript) {
+          setTranscriptLog(prev => [...prev, { text: transcript, ts: Date.now() }]);
+          transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+        // Only act on commands when the pipeline is waiting for a response
+        if (pipelineStateRef.current !== 'PAUSED_WAITING_INPUT') {
+          console.log("[Workspace] Ignoring intent — pipelineState not PAUSED_WAITING_INPUT");
+          return;
+        }
         if (intent === 'BO_QUA') ignoreDetection();
         else if (intent === 'GIAI_THICH') explainMore();
-        // XAC_NHAN / UNKNOWN: no automatic action
-      },
+      }, [ignoreDetection, explainMore]),
     });
-
-  useEffect(() => {
-    if (pipelineState === 'PAUSED_WAITING_INPUT' && voiceSupported) {
-      startListening();
-    } else {
-      stopListening();
-    }
-  }, [pipelineState, voiceSupported, startListening, stopListening]);
 
   /** Upload to backend + connect WebSocket, keep local preview URL. */
   const handleFileSelected = useCallback(async (file: File) => {
@@ -387,12 +403,14 @@ export default function Workspace() {
   }, [liveSource, connectLive]);
 
   const handleStop = useCallback(() => {
+    stopListening();
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.currentTime = 0;
     }
+    setTranscriptLog([]);
     resetAnalysis();
-  }, [resetAnalysis]);
+  }, [stopListening, resetAnalysis]);
 
   const handleRemoveVideo = useCallback(() => {
     if (videoRef.current) {
@@ -402,6 +420,7 @@ export default function Workspace() {
     setVideoFile(null);
     setVideoUrl(null);
     setIsUploading(false);
+    setTranscriptLog([]);
     resetAnalysis();
   }, [videoUrl, resetAnalysis]);
 
@@ -438,6 +457,7 @@ export default function Workspace() {
 
           {/* ── Video Panel ────────────────────────────────────────────────── */}
           <Grid size={{ xs: 12, lg: 8 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, height: '100%' }}>
             <Box
               sx={{
                 backgroundColor: 'background.paper',
@@ -445,7 +465,6 @@ export default function Workspace() {
                 border: '1px solid #E2EAE8',
                 boxShadow: '0 2px 12px rgba(13,27,42,0.06)',
                 overflow: 'hidden',
-                height: '100%',
               }}
             >
               {/* Panel header */}
@@ -524,8 +543,8 @@ export default function Workspace() {
                         {voiceSupported && (
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: isVoiceListening ? '#4FC3F7' : 'rgba(255,255,255,0.35)' }}>
                             {isVoiceListening ? <Mic size={14} /> : <MicOff size={14} />}
-                            {isVoiceListening && voiceTranscript && (
-                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.6)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{voiceTranscript}</Typography>
+                            {isVoiceListening && (
+                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', maxWidth: 140 }}>đang nghe…</Typography>
                             )}
                           </Box>
                         )}
@@ -588,10 +607,8 @@ export default function Workspace() {
                               ? <Mic size={14} />
                               : <MicOff size={14} />
                             }
-                            {isVoiceListening && voiceTranscript && (
-                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.6)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {voiceTranscript}
-                              </Typography>
+                            {isVoiceListening && (
+                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', maxWidth: 140 }}>đang nghe…</Typography>
                             )}
                           </Box>
                         )}
@@ -664,6 +681,74 @@ export default function Workspace() {
                 )}
               </Box>
             </Box>
+
+            {/* ── Voice / Whisper Transcript Panel ──────────────────────────── */}
+            <Box
+              sx={{
+                backgroundColor: 'background.paper',
+                borderRadius: '16px',
+                border: '1px solid #E2EAE8',
+                boxShadow: '0 2px 12px rgba(13,27,42,0.06)',
+                overflow: 'hidden',
+              }}
+            >
+              <Box sx={{ px: 2.5, py: 1.25, borderBottom: '1px solid #E2EAE8', display: 'flex', flexDirection: 'column', gap: 1, backgroundColor: '#F8FAFB' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                  <Box sx={{ width: 28, height: 28, borderRadius: '8px', backgroundColor: isVoiceListening ? 'rgba(2,119,189,0.12)' : 'rgba(154,165,177,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: isVoiceListening ? '#0277BD' : '#9AA5B1', transition: 'all 0.2s' }}>
+                    {isVoiceListening ? <Mic size={14} /> : <MicOff size={14} />}
+                  </Box>
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.primary', display: 'block' }}>
+                      Voice Transcript
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: micError ? '#EF4444' : 'text.secondary', fontSize: '0.7rem' }}>
+                      {micError
+                        ? `Lỗi mic: ${micError}`
+                        : isVoiceListening
+                          ? 'Đang nghe…'
+                          : !voiceSupported
+                            ? 'Trình duyệt không hỗ trợ SpeechRecognition'
+                            : 'Bấm "Bắt đầu AI" để kích hoạt mic'}
+                    </Typography>
+                  </Box>
+                </Box>
+                {/* Audio level meter — single bar showing RMS amplitude */}
+                <Box sx={{ height: 4, borderRadius: 2, backgroundColor: 'rgba(0,0,0,0.07)', overflow: 'hidden' }}>
+                  <Box sx={{
+                    height: '100%',
+                    borderRadius: 2,
+                    width: `${audioLevel * 100}%`,
+                    backgroundColor: audioLevel > 0.6 ? '#EF4444' : audioLevel > 0.25 ? '#22C55E' : '#9AA5B1',
+                    transition: 'width 80ms linear, background-color 150ms',
+                  }} />
+                </Box>
+              </Box>
+              <Box sx={{ p: 2, maxHeight: 130, overflowY: 'auto' }}>
+                {transcriptLog.length === 0 ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'text.disabled', py: 1 }}>
+                    <MicOff size={14} />
+                    <Typography variant="caption">
+                      Chưa có transcript. Nói &quot;bỏ qua&quot; hoặc &quot;giải thích&quot; khi AI dừng.
+                    </Typography>
+                  </Box>
+                ) : (
+                  transcriptLog.map((entry, i) => (
+                    <Box key={i} sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, mb: 0.75, '&:last-child': { mb: 0 } }}>
+                      <Typography sx={{ fontSize: '0.68rem', color: 'text.disabled', fontFamily: 'monospace', flexShrink: 0 }}>
+                        {new Date(entry.ts).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </Typography>
+                      <Box sx={{ width: 4, height: 4, borderRadius: '50%', backgroundColor: '#0277BD', flexShrink: 0, mt: 0.5 }} />
+                      <Typography sx={{ fontSize: '0.8rem', color: 'text.primary', lineHeight: 1.5 }}>
+                        {entry.text}
+                      </Typography>
+                    </Box>
+                  ))
+                )}
+                <div ref={transcriptEndRef} />
+              </Box>
+            </Box>
+
+            </Box>
           </Grid>
 
           {/* ── Control Panel ───────────────────────────────────────────────── */}
@@ -722,6 +807,8 @@ export default function Workspace() {
                       onClick={() => {
                         startMockAnalysis();
                         videoRef.current?.play().catch(() => {});
+                        console.log("[Workspace] Bắt đầu AI clicked, voiceSupported:", voiceSupported, "isVoiceListening:", isVoiceListening);
+                        if (voiceSupported) startListening();
                       }}
                       startIcon={<Play size={17} />}
                       sx={{ borderRadius: '10px', py: 1.25, fontWeight: 700, fontSize: '0.875rem' }}
