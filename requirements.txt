@@ -3,11 +3,10 @@ opencv-python>=4.8.0
 ultralytics>=8.0.0
 torch>=2.0.0
 torchvision>=0.15.0
-numpy>=1.24.0,<2.0.0
+numpy>=1.24.0
 
 # Voice recognition — faster-whisper (nhẹ hơn openai-whisper, không cần torch)
 faster-whisper>=1.0.0
-pyaudio>=0.2.13
 
 # LLM & Embeddings
 openai>=1.0.0
@@ -39,6 +38,7 @@ loguru>=0.7.0
 
 # Utilities
 python-dotenv>=1.0.0
+python-multipart>=0.0.9
 requests>=2.31.0
 tqdm>=4.66.0
 psutil>=5.9.0

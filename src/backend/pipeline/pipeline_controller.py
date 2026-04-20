@@ -128,16 +128,20 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         model = YOLO(model_path_str)
         model_names = model.names or {}
 
-        # Use FP16 on CUDA for ~2x faster inference; fall back to FP32 on CPU.
-        if torch.cuda.is_available():
-            model.half()
-            print("[Worker] YOLO FP16 (CUDA)", flush=True)
-        else:
-            print("[Worker] YOLO FP32 (CPU)", flush=True)
-
-        # Warm-up at YOLO input size (640px) to fully initialize CUDA kernels.
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        model(dummy, verbose=False, conf=0.99)
+        if torch.cuda.is_available():
+            try:
+                model.half()
+                model(dummy, verbose=False, conf=0.99)
+                print("[Worker] YOLO FP16 (CUDA)", flush=True)
+            except Exception as fp16_exc:
+                print(f"[Worker] FP16 failed ({fp16_exc}), falling back to FP32", flush=True)
+                model.float()
+                model(dummy, verbose=False, conf=0.99)
+                print("[Worker] YOLO FP32 (CUDA fallback)", flush=True)
+        else:
+            model(dummy, verbose=False, conf=0.99)
+            print("[Worker] YOLO FP32 (CPU)", flush=True)
         print("[Worker] YOLO warm-up done", flush=True)
     except Exception as exc:
         print(f"[Worker] YOLO load/warm-up failed: {exc}", flush=True)
@@ -153,12 +157,10 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         result_q.put(_eos_event([]))
         return
 
-    # Request BGR directly from GStreamer — eliminates all Python format detection.
-    # videoscale down to YOLO input size (640px wide) before appsink saves YOLO prep time.
-    # max-buffers=4 + drop=true: GStreamer drops stale frames instead of stalling when YOLO is busy.
-    _SCALE   = "videoscale ! video/x-raw,width=640,pixel-aspect-ratio=1/1 ! videoconvert"
-    _SINK_CAPS = "video/x-raw,format=BGR"
-    _SINK_TAIL = f"appsink name=sink sync=false max-buffers=4 drop=true caps={_SINK_CAPS}"
+    # No format caps on appsink — BGR caps cause back-propagation into decodebin and fail.
+    # Format conversion to BGR is done in Python after pulling the sample.
+    _SCALE = "videoscale ! video/x-raw,width=640 ! videoconvert"
+    _SINK_TAIL = "appsink name=sink sync=false max-buffers=4 drop=true"
 
     _src = video_path_str
     is_live = _src.startswith(("rtsp://", "rtp://", "rtmp://")) or _src.startswith("/dev/video")
@@ -190,9 +192,10 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         )
     else:
         is_live = False
-        # decodebin handles any container/codec — more robust than hardcoded qtdemux+h264parse
+        # Explicit CPU decoder pipeline — avoids NVMM (GPU memory) buffers from nvv4l2decoder
+        # which cannot be mapped to system memory via buf.map()
         pipeline_str = (
-            f'filesrc location="{_src}" ! decodebin ! {_QUEUE} ! {_SCALE} ! {_SINK_TAIL}'
+            f'filesrc location="{_src}" ! qtdemux ! h264parse ! avdec_h264 ! videoconvert ! {_QUEUE} ! {_SINK_TAIL}'
         )
 
     # Live sources have no blank-frame header — skip the initial-frame filter
@@ -306,26 +309,49 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
             if sample is None:
                 msg = bus.timed_pop_filtered(0, Gst.MessageType.EOS | Gst.MessageType.ERROR)
                 if msg:
-                    print(f"[Worker] Bus EOS/error: {msg.type}", flush=True)
+                    if msg.type == Gst.MessageType.ERROR:
+                        err, dbg = msg.parse_error()
+                        print(f"[Worker] GStreamer ERROR: {err} | {dbg}", flush=True)
+                    else:
+                        print(f"[Worker] Bus EOS/error: {msg.type}", flush=True)
                     break
                 continue
 
-            # GStreamer outputs BGR directly (negotiated via caps) — no conversion needed.
             buf = sample.get_buffer()
             caps = sample.get_caps()
             struct = caps.get_structure(0)
             w = struct.get_value("width")
             h = struct.get_value("height")
+            fmt = struct.get_value("format") or "BGR"
             ok, mapinfo = buf.map(Gst.MapFlags.READ)
             if not ok:
                 continue
             raw = np.frombuffer(mapinfo.data, dtype=np.uint8).copy()
             buf.unmap(mapinfo)
-            frame = raw.reshape(h, w, 3)  # already BGR
+            # Skip invalid/non-video buffers (subtitle tracks, metadata, etc.)
+            min_size = h * w
+            if not w or not h or len(raw) < min_size:
+                continue
+            # Convert any YUV/planar format to BGR for YOLO
+            try:
+                if fmt == "NV12":
+                    yuv = raw[:h * w * 3 // 2].reshape(h * 3 // 2, w)
+                    frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
+                elif fmt == "I420":
+                    yuv = raw[:h * w * 3 // 2].reshape(h * 3 // 2, w)
+                    frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+                elif fmt == "RGB":
+                    frame = cv2.cvtColor(raw[:h * w * 3].reshape(h, w, 3), cv2.COLOR_RGB2BGR)
+                else:
+                    frame = raw[:h * w * 3].reshape(h, w, 3)  # assume BGR
+            except Exception:
+                continue
 
             # Use GStreamer PTS for accurate timestamp; fall back to frame counter
             pts = buf.pts
             timestamp_ms = int(pts / 1_000_000) if pts != Gst.CLOCK_TIME_NONE else int(frame_index * 1000 / 30)
+            if frame_index == SKIP_INITIAL_FRAMES:
+                print(f"[Worker] Frame shape: {frame.shape} (h×w×c)", flush=True)
             if model is not None and frame_index % FRAME_STEP == 0 and _is_diagnostic_frame(frame, frame_index):
                 try:
                     results = model(frame, conf=conf, verbose=False)
@@ -343,6 +369,20 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                             if _is_ignored(frame_index, xyxy):
                                 continue
 
+                            # Pad small bboxes only — skip if box already covers >20% of frame
+                            _fh, _fw = frame.shape[:2]
+                            _x1, _y1, _x2, _y2 = xyxy
+                            _bw, _bh = _x2 - _x1, _y2 - _y1
+                            if (_bw * _bh) / (_fw * _fh) < 0.20:
+                                _pad_x, _pad_y = _bw * 0.15, _bh * 0.15
+                                xyxy = [
+                                    max(0.0, _x1 - _pad_x),
+                                    max(0.0, _y1 - _pad_y),
+                                    min(float(_fw), _x2 + _pad_x),
+                                    min(float(_fh), _y2 + _pad_y),
+                                ]
+
+                            print(f"[Worker] Detection bbox: {[round(v,1) for v in xyxy]} in frame {frame.shape[1]}x{frame.shape[0]}", flush=True)
                             location = _infer_location(xyxy, frame.shape)
                             thumbnail_b64 = _crop_b64(frame, xyxy)
                             det_data = {

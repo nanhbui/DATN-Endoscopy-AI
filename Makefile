@@ -34,7 +34,7 @@ ROOT        := $(shell pwd)
 VENV        := $(ROOT)/.venv
 PYTHON      := $(VENV)/bin/python
 PIP         := $(VENV)/bin/pip
-UVICORN     := $(VENV)/bin/uvicorn
+UVICORN     := $(VENV)/bin/python -m uvicorn
 BE_SRC      := $(ROOT)/src/backend/api
 FE_SRC      := $(ROOT)/frontend
 
@@ -42,7 +42,7 @@ FE_SRC      := $(ROOT)/frontend
 VPN_NAME    := bee15
 GPU_HOST    := 10.8.0.7
 GPU_USER    := emie
-REMOTE_DIR  := ~/endoscopy
+REMOTE_DIR  := ~/DATN_ver0
 SSH_OPTS    := -o ConnectTimeout=8 -o StrictHostKeyChecking=no
 SSH         := ssh $(SSH_OPTS) $(GPU_USER)@$(GPU_HOST)
 
@@ -305,16 +305,16 @@ remote-dev: _require-vpn env-check
 	@echo "$(YELLOW)  Syncing code first…$(RESET)"
 	@$(MAKE) --no-print-directory sync
 	@echo "$(YELLOW)  Starting Docker Compose on server…$(RESET)"
-	$(SSH) "cd $(REMOTE_DIR) && sudo docker compose up --build -d"
+	$(SSH) "cd $(REMOTE_DIR) && docker compose up --build -d"
 	@echo "$(GREEN)✔ Remote stack is up$(RESET)"
 	@echo "  BE → http://$(GPU_HOST):8001"
 	@echo "  FE → http://$(GPU_HOST):3000"
 
 remote-down: _require-vpn
 	@echo "$(CYAN)Stopping stack on GPU server…$(RESET)"
-	$(SSH) "cd $(REMOTE_DIR) && sudo docker compose down 2>&1 | grep -v 'env file.*not found' || true"
+	$(SSH) "cd $(REMOTE_DIR) && docker compose down 2>&1 | grep -v 'env file.*not found' || true"
 	@echo "$(GREEN)✔ Remote stack stopped$(RESET)"
 
 remote-logs: _require-vpn
 	@echo "$(CYAN)Streaming logs from GPU server (Ctrl-C to stop)…$(RESET)"
-	$(SSH) "cd $(REMOTE_DIR) && sudo docker compose logs -f 2>&1 | grep -v 'env file.*not found' || true"
+	$(SSH) "cd $(REMOTE_DIR) && docker compose logs -f 2>&1 | grep -v 'env file.*not found' || true"

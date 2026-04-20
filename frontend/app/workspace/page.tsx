@@ -328,6 +328,22 @@ export default function Workspace() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [transcriptLog, setTranscriptLog] = useState<{ text: string; ts: number }[]>([]);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
+
+  // Health check on mount and every 10s when not connected
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await fetch(`${(await import('@/lib/ws-client')).API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+        setBackendReachable(res.ok);
+      } catch {
+        setBackendReachable(false);
+      }
+    };
+    check();
+    const id = setInterval(() => { if (!isConnected) check(); }, 10000);
+    return () => clearInterval(id);
+  }, [isConnected]);
 
   // Seek video to detection frame so bbox aligns with what's on screen
   useEffect(() => {
@@ -368,6 +384,13 @@ export default function Workspace() {
       }, [ignoreDetection, explainMore]),
     });
 
+  // Auto-activate mic when pipeline pauses on a detection (hands-free workflow)
+  useEffect(() => {
+    if (pipelineState === 'PAUSED_WAITING_INPUT' && voiceSupported && !isVoiceListening) {
+      startListening();
+    }
+  }, [pipelineState, voiceSupported, isVoiceListening, startListening]);
+
   /** Upload to backend + connect WebSocket, keep local preview URL. */
   const handleFileSelected = useCallback(async (file: File) => {
     setVideoFile(file);
@@ -382,25 +405,28 @@ export default function Workspace() {
       await uploadAndConnect(file, setUploadProgress);
       // Pipeline is now running on the server — play the local preview too
       videoRef.current?.play().catch(() => {/* autoplay blocked — user can click play manually */});
+      // Start voice immediately so mic is active before first detection
+      if (voiceSupported) startListening();
     } catch (err) {
       console.warn("[workspace] backend offline, using mock pipeline:", err);
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
     }
-  }, [uploadAndConnect]);
+  }, [uploadAndConnect, voiceSupported, startListening]);
 
   const handleLiveConnect = useCallback(async () => {
     if (!liveSource.trim()) return;
     setIsLiveConnecting(true);
     try {
       await connectLive(liveSource.trim());
+      if (voiceSupported) startListening();
     } catch (err) {
       console.warn('[workspace] live connect failed:', err);
     } finally {
       setIsLiveConnecting(false);
     }
-  }, [liveSource, connectLive]);
+  }, [liveSource, connectLive, voiceSupported, startListening]);
 
   const handleStop = useCallback(() => {
     stopListening();
@@ -452,6 +478,16 @@ export default function Workspace() {
             Tải video nội soi lên, theo dõi luồng và tương tác với trợ lý AI theo thời gian thực.
           </Typography>
         </Box>
+
+        {/* Backend offline banner */}
+        {backendReachable === false && (
+          <Box sx={{ mb: 2, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: 'rgba(211,47,47,0.08)', border: '1px solid rgba(211,47,47,0.3)', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <AlertTriangle size={16} color="#D32F2F" />
+            <Typography sx={{ fontSize: '0.85rem', color: '#D32F2F', fontWeight: 500 }}>
+              Không kết nối được Backend ({(process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8001')}). Hãy khởi động server trước khi phân tích.
+            </Typography>
+          </Box>
+        )}
 
         <Grid container spacing={3}>
 

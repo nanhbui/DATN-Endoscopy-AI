@@ -156,6 +156,12 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       }
       case "ERROR":
         console.error("[WS] server error:", evt.data.message);
+        if (evt.data.message?.includes("Session not found")) {
+          wsRef.current?.disconnect();
+          setIsConnected(false);
+          setPipelineState("IDLE");
+          setVideoId(null);
+        }
         break;
     }
   }, []);

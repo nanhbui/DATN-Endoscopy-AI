@@ -142,15 +142,24 @@ export function useVoiceControl({ onIntent }: UseVoiceControlOptions) {
     };
 
     recognition.onerror = (event) => {
+      // no-speech / aborted are normal Chrome timeouts — not real errors
+      if (event.error === "no-speech" || event.error === "aborted") {
+        console.log("[VoiceControl] non-fatal:", event.error);
+        return;
+      }
       console.error("[VoiceControl] error:", event.error);
       setMicError(event.error);
     };
 
     // Auto-restart after silence — Chrome stops the session automatically
     recognition.onend = () => {
-      console.log("[VoiceControl] onend — recognitionRef:", !!recognitionRef.current);
       if (recognitionRef.current) {
-        try { recognitionRef.current.start(); } catch (e) { console.warn("[VoiceControl] restart failed:", e); }
+        try { recognitionRef.current.start(); } catch (e) {
+          // InvalidStateError = already running — ignore
+          if (!(e instanceof DOMException && e.name === "InvalidStateError")) {
+            console.warn("[VoiceControl] restart failed:", e);
+          }
+        }
       }
     };
 
