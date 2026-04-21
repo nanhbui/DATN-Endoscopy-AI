@@ -17,10 +17,21 @@ interface UseVoiceControlOptions {
 }
 
 // Quick keyword pass — fires instantly for obvious short commands
+// Includes common Web Speech API misrecognitions of Vietnamese
 const QUICK_KEYWORDS: [VoiceIntent, string[]][] = [
-  ["BO_QUA",     ["bỏ qua", "loại bỏ", "không phải", "bắt sai", "nhận sai", "nhầm", "sai rồi", "false positive"]],
-  ["GIAI_THICH", ["giải thích", "phân tích", "nói thêm", "chi tiết", "tại sao", "vì sao"]],
-  ["XAC_NHAN",   ["xác nhận", "đúng rồi", "ghi lại", "lưu lại", "chính xác", "chuẩn rồi"]],
+  ["BO_QUA", [
+    "bỏ qua", "bo qua", "loại bỏ", "loai bo",
+    "không phải", "khong phai", "bắt sai", "nhận sai", "nhầm rồi", "sai rồi",
+    "false positive", "skip", "next",
+  ]],
+  ["GIAI_THICH", [
+    "giải thích", "giai thich", "phân tích", "phan tich",
+    "nói thêm", "chi tiết hơn", "tại sao", "vì sao", "explain", "more detail",
+  ]],
+  ["XAC_NHAN", [
+    "xác nhận", "xac nhan", "đúng rồi", "ghi lại", "lưu lại",
+    "chính xác", "chuẩn rồi", "confirm", "yes",
+  ]],
 ];
 
 function quickMatch(text: string): VoiceIntent | null {
@@ -77,6 +88,9 @@ export function useVoiceControl({ onIntent }: UseVoiceControlOptions) {
   const streamRef = useRef<MediaStream | null>(null);
   const onIntentRef = useRef(onIntent);
   onIntentRef.current = onIntent;
+  // Track how many chars of the current interim we've already acted on.
+  // Resets to 0 when Chrome finalises the result (new utterance slot).
+  const lastFiredEndRef = useRef<number>(0);
 
   useEffect(() => {
     console.log("[VoiceControl] mount — checking SpeechRecognition support");
@@ -102,8 +116,9 @@ export function useVoiceControl({ onIntent }: UseVoiceControlOptions) {
   }, []);
 
   const startListening = useCallback(() => {
-    console.log("[VoiceControl] startListening called", { supported, isListening });
-    if (!supported || isListening) return;
+    console.log("[VoiceControl] startListening called", { supported, isListening, hasRef: !!recognitionRef.current });
+    // If recognition object already exists, it's already running — don't double-start
+    if (!supported || recognitionRef.current) return;
 
     // ── Speech recognition (synchronous — must stay within user gesture) ──────
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -119,25 +134,40 @@ export function useVoiceControl({ onIntent }: UseVoiceControlOptions) {
     recognitionRef.current = recognition;
 
     recognition.onresult = (event) => {
-      console.log("[VoiceControl] onresult — results:", event.results.length, "resultIndex:", event.resultIndex);
       let interim = "";
       let finalText = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i][0].transcript;
-        console.log(`[VoiceControl] result[${i}]: isFinal=${event.results[i].isFinal}, transcript="${text}"`);
         if (event.results[i].isFinal) finalText += text;
         else interim += text;
       }
+
+      // ── Interim: match only on the *new* words since last fire ─────────────
       if (interim) {
-        console.log("[VoiceControl] interim:", interim);
         setTranscript(interim);
+        const delta = interim.slice(lastFiredEndRef.current).trim();
+        if (delta) {
+          const quickIntent = quickMatch(delta);
+          if (quickIntent) {
+            lastFiredEndRef.current = 0;
+            console.log("[VoiceControl] interim match:", quickIntent, delta);
+            onIntentRef.current(quickIntent, delta);
+            // Restart to flush accumulated buffer — next command starts clean
+            recognitionRef.current?.stop();
+          }
+        }
       }
+
+      // ── Final: classify only if nothing was fired during interim ────────────
       if (finalText.trim()) {
-        console.log("[VoiceControl] final:", finalText);
         setTranscript(finalText);
-        classifyIntent(finalText.trim()).then(intent => {
-          onIntentRef.current(intent, finalText.trim());
-        });
+        const alreadyFired = lastFiredEndRef.current > 0;
+        lastFiredEndRef.current = 0; // new result slot — reset offset
+        if (!alreadyFired) {
+          classifyIntent(finalText.trim()).then(intent => {
+            if (intent !== "UNKNOWN") onIntentRef.current(intent, finalText.trim());
+          });
+        }
       }
     };
 
@@ -154,12 +184,15 @@ export function useVoiceControl({ onIntent }: UseVoiceControlOptions) {
     // Auto-restart after silence — Chrome stops the session automatically
     recognition.onend = () => {
       if (recognitionRef.current) {
-        try { recognitionRef.current.start(); } catch (e) {
-          // InvalidStateError = already running — ignore
-          if (!(e instanceof DOMException && e.name === "InvalidStateError")) {
-            console.warn("[VoiceControl] restart failed:", e);
+        // Small delay prevents tight restart loop when no-speech fires repeatedly
+        setTimeout(() => {
+          if (!recognitionRef.current) return;
+          try { recognitionRef.current.start(); } catch (e) {
+            if (!(e instanceof DOMException && e.name === "InvalidStateError")) {
+              console.warn("[VoiceControl] restart failed:", e);
+            }
           }
-        }
+        }, 300);
       }
     };
 

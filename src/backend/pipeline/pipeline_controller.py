@@ -37,7 +37,14 @@ else:
     if not DEFAULT_MODEL.exists():
         DEFAULT_MODEL = _REPO_ROOT / "yolov8n.pt"
 
-CONFIDENCE_THRESHOLD = 0.65   # higher threshold reduces false positives
+CONFIDENCE_THRESHOLD = float(_os.environ.get("ENDOSCOPY_CONF", "0.45"))
+
+# Endoscopy viewport width (pixels) — the circular scope view occupies the left
+# portion of the 1920-wide frame; the right side is the patient info/thumbnail panel.
+# Model was trained on viewport-only crops so we slice before inference.
+# x-coords from YOLO on the crop are still valid in full-frame space (origin unchanged).
+VIEWPORT_W = 1300  # empirical for 1920×1080; override via env ENDOSCOPY_VIEWPORT_W
+VIEWPORT_W = int(_os.environ.get("ENDOSCOPY_VIEWPORT_W", str(VIEWPORT_W)))
 
 # Skip this many frames at the start of every video (scope insertion / title cards)
 SKIP_INITIAL_FRAMES = 90   # ≈ 3 s at 30 fps
@@ -354,7 +361,12 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                 print(f"[Worker] Frame shape: {frame.shape} (h×w×c)", flush=True)
             if model is not None and frame_index % FRAME_STEP == 0 and _is_diagnostic_frame(frame, frame_index):
                 try:
-                    results = model(frame, conf=conf, verbose=False)
+                    # Crop to viewport only — removes info panel on the right so
+                    # model receives the same scale it was trained on (viewport crops).
+                    # x-coords from YOLO are still valid in full-frame space (same left origin).
+                    _vw = VIEWPORT_W if frame.shape[1] > VIEWPORT_W else frame.shape[1]
+                    frame_inf = frame[:, :_vw]
+                    results = model(frame_inf, conf=conf, verbose=False)
                     for result in results:
                         if result.boxes is None or len(result.boxes) == 0:
                             continue
@@ -369,20 +381,36 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                             if _is_ignored(frame_index, xyxy):
                                 continue
 
-                            # Pad small bboxes only — skip if box already covers >20% of frame
                             _fh, _fw = frame.shape[:2]
                             _x1, _y1, _x2, _y2 = xyxy
                             _bw, _bh = _x2 - _x1, _y2 - _y1
-                            if (_bw * _bh) / (_fw * _fh) < 0.20:
-                                _pad_x, _pad_y = _bw * 0.15, _bh * 0.15
-                                xyxy = [
-                                    max(0.0, _x1 - _pad_x),
-                                    max(0.0, _y1 - _pad_y),
-                                    min(float(_fw), _x2 + _pad_x),
-                                    min(float(_fh), _y2 + _pad_y),
-                                ]
+                            _cx, _cy = (_x1 + _x2) / 2, (_y1 + _y2) / 2
 
-                            print(f"[Worker] Detection bbox: {[round(v,1) for v in xyxy]} in frame {frame.shape[1]}x{frame.shape[0]}", flush=True)
+                            # Skip detections outside the circular endoscopy viewport.
+                            # The scope viewport is a circle centred at (~640, ~540) with r~520
+                            # in a 1920×1080 frame. Detections in corners/overlays are FP.
+                            _VCX, _VCY, _VR = 640, 540, 520
+                            if (_cx - _VCX) ** 2 + (_cy - _VCY) ** 2 > _VR ** 2:
+                                print(f"[Worker] Skipped out-of-viewport bbox center ({_cx:.0f},{_cy:.0f})", flush=True)
+                                continue
+
+                            # Skip truly absurd detections (> 70% frame area)
+                            if (_bw * _bh) / (_fw * _fh) > 0.70:
+                                print(f"[Worker] Skipped oversized bbox ({(_bw*_bh)/(_fw*_fh)*100:.0f}% of frame)", flush=True)
+                                continue
+
+                            # Cap bbox to 60% of frame in each axis (centred), then clamp to frame
+                            _bw = min(_bw, _fw * 0.60)
+                            _bh = min(_bh, _fh * 0.60)
+                            # Enforce 2% margin from edges so bbox never touches the rounded border
+                            _mx, _my = _fw * 0.02, _fh * 0.02
+                            _x1 = max(_mx, _cx - _bw / 2)
+                            _y1 = max(_my, _cy - _bh / 2)
+                            _x2 = min(_fw - _mx, _x1 + _bw)
+                            _y2 = min(_fh - _my, _y1 + _bh)
+                            xyxy = [_x1, _y1, _x2, _y2]
+
+                            print(f"[Worker] Detection bbox: {[round(v,1) for v in xyxy]} ({(_bw*_bh)/(_fw*_fh)*100:.0f}% frame) in {frame.shape[1]}x{frame.shape[0]}", flush=True)
                             location = _infer_location(xyxy, frame.shape)
                             thumbnail_b64 = _crop_b64(frame, xyxy)
                             det_data = {
@@ -492,7 +520,7 @@ class PipelineController:
         elif action == "ACTION_EXPLAIN":
             self._set_state(PipelineState.PROCESSING_LLM)
             # Pipeline stays paused in subprocess; WS server handles LLM streaming.
-        elif action == "ACTION_RESUME":
+        elif action in ("ACTION_RESUME", "ACTION_CONFIRM"):
             if self._cmd_q:
                 self._cmd_q.put("RESUME")
             self._pending = None

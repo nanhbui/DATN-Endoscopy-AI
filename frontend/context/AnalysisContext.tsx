@@ -52,18 +52,16 @@ interface AnalysisContextType {
   detections: Detection[];
 
   // ── actions ──
-  /** Upload a video file to the server and obtain a videoId. */
   uploadAndConnect: (file: File, onProgress?: (pct: number) => void) => Promise<void>;
-  /** Register a live source (RTSP URL / device) and connect WebSocket. */
   connectLive: (source: string) => Promise<void>;
-  /** Start analysis on the current videoId (sends WS connection). */
   startMockAnalysis: () => void;
   ignoreDetection: () => void;
   explainMore: () => void;
+  /** Confirm detection as valid → resume pipeline. */
+  confirmDetection: () => void;
   resumePlayback: () => void;
   setIsPlaying: (v: boolean) => void;
   addDetection: (d: Detection) => void;
-  /** Clear all analysis state (call when video is removed). */
   resetAnalysis: () => void;
 }
 
@@ -71,7 +69,6 @@ const AnalysisContext = createContext<AnalysisContextType | undefined>(undefined
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// daday.pt model outputs on 1920×1080 frames
 const FRAME_W = 1920;
 const FRAME_H = 1080;
 
@@ -80,7 +77,6 @@ function toDetection(d: DetectionData): Detection {
   return {
     label: d.lesion.label,
     confidence: d.lesion.confidence,
-    // Convert pixel bbox → percentage for CSS overlay positioning
     bbox: {
       x: (x1 / FRAME_W) * 100,
       y: (y1 / FRAME_H) * 100,
@@ -106,7 +102,6 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
 
   const wsRef = useRef<EndoscopyWsClient | null>(null);
 
-  // ── mock fallback timers (used when backend is offline) ───────────────────
   const detectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const llmTypingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -115,7 +110,6 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     if (llmTypingTimerRef.current) { clearInterval(llmTypingTimerRef.current); llmTypingTimerRef.current = null; }
   }, []);
 
-  // ── derived compat props ──────────────────────────────────────────────────
   const isPlaying = pipelineState === "PLAYING";
 
   // ── WebSocket event handler ───────────────────────────────────────────────
@@ -145,7 +139,9 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
         setLlmInsight((prev) => prev + evt.data.chunk);
         break;
       case "LLM_DONE":
+        // After explanation, go back to waiting for doctor's decision
         setIsListeningVoice(false);
+        setPipelineState("PAUSED_WAITING_INPUT");
         break;
       case "VIDEO_FINISHED": {
         setPipelineState("EOS_SUMMARY");
@@ -181,7 +177,6 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
 
   // ── Public actions ────────────────────────────────────────────────────────
 
-  /** Upload file → get videoId → open WebSocket. */
   const uploadAndConnect = useCallback(async (
     file: File,
     onProgress?: (pct: number) => void,
@@ -191,20 +186,17 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     connectWs(video_id);
   }, [connectWs]);
 
-  /** Register live source → get videoId → open WebSocket. */
   const connectLive = useCallback(async (source: string) => {
     const { video_id } = await connectLiveStream(source);
     setVideoId(video_id);
     connectWs(video_id);
   }, [connectWs]);
 
-  /** Fallback / demo: used when no real video is loaded yet. */
   const startMockAnalysis = useCallback(() => {
     if (videoId) {
       connectWs(videoId);
       return;
     }
-    // Pure mock for demo without backend
     clearMockTimers();
     setPipelineState("PLAYING");
     setCurrentDetection(null);
@@ -229,7 +221,6 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     if (wsRef.current) {
       wsRef.current.send({ action: "ACTION_IGNORE" });
     } else {
-      // mock fallback
       setCurrentDetection(null);
       setLlmInsight("");
       setIsListeningVoice(false);
@@ -242,7 +233,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       wsRef.current.send({ action: "ACTION_EXPLAIN" });
       return;
     }
-    // mock fallback — simulate LLM streaming
+    // mock fallback
     clearMockTimers();
     setIsListeningVoice(true);
     setLlmInsight("");
@@ -256,9 +247,19 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
         clearInterval(llmTypingTimerRef.current!);
         llmTypingTimerRef.current = null;
         setIsListeningVoice(false);
+        setPipelineState("PAUSED_WAITING_INPUT");
       }
     }, 22);
   }, [clearMockTimers]);
+
+  const confirmDetection = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.send({ action: "ACTION_CONFIRM" });
+    }
+    setPipelineState("PLAYING");
+    setCurrentDetection(null);
+    setLlmInsight("");
+  }, []);
 
   const resumePlayback = useCallback(() => {
     wsRef.current?.send({ action: "ACTION_RESUME" });
@@ -291,7 +292,6 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     setDetections([]);
   }, [clearMockTimers]);
 
-  // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       clearMockTimers();
@@ -299,7 +299,6 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     };
   }, [clearMockTimers]);
 
-  // ── Context value ─────────────────────────────────────────────────────────
   const value = useMemo<AnalysisContextType>(
     () => ({
       isConnected,
@@ -315,6 +314,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       startMockAnalysis,
       ignoreDetection,
       explainMore,
+      confirmDetection,
       resumePlayback,
       setIsPlaying,
       addDetection,
@@ -324,7 +324,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       isConnected, pipelineState, videoId, isPlaying,
       currentDetection, isListeningVoice, llmInsight, detections,
       uploadAndConnect, connectLive, startMockAnalysis, ignoreDetection,
-      explainMore, resumePlayback, setIsPlaying, addDetection, resetAnalysis,
+      explainMore, confirmDetection, resumePlayback, setIsPlaying, addDetection, resetAnalysis,
     ],
   );
 

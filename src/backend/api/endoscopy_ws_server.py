@@ -19,6 +19,7 @@ WebSocket message contract (§5):
     ACTION_IGNORE    {}
     ACTION_EXPLAIN   {}
     ACTION_RESUME    {}
+    ACTION_CONFIRM   {}
 """
 
 from __future__ import annotations

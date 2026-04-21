@@ -14,6 +14,8 @@ import {
   UploadCloud,
   Zap,
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import { API_BASE } from '@/lib/ws-client';
 import { useAnalysis } from '@/context/AnalysisContext';
 import { useVoiceControl } from '@/hooks/use-voice-control';
 
@@ -310,6 +312,7 @@ export default function Workspace() {
     startMockAnalysis,
     ignoreDetection,
     explainMore,
+    confirmDetection,
     uploadAndConnect,
     connectLive,
     resetAnalysis,
@@ -329,15 +332,25 @@ export default function Workspace() {
   const [transcriptLog, setTranscriptLog] = useState<{ text: string; ts: number }[]>([]);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
+  const prevBackendReachable = useRef<boolean | null>(null);
+  const [backendJustCameBack, setBackendJustCameBack] = useState(false);
 
   // Health check on mount and every 10s when not connected
   useEffect(() => {
     const check = async () => {
       try {
-        const res = await fetch(`${(await import('@/lib/ws-client')).API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
-        setBackendReachable(res.ok);
+        const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+        const ok = res.ok;
+        // Detect offline → online transition
+        if (ok && prevBackendReachable.current === false) {
+          setBackendJustCameBack(true);
+        }
+        prevBackendReachable.current = ok;
+        setBackendReachable(ok);
       } catch {
+        prevBackendReachable.current = false;
         setBackendReachable(false);
+        setBackendJustCameBack(false);
       }
     };
     check();
@@ -381,7 +394,8 @@ export default function Workspace() {
         }
         if (intent === 'BO_QUA') ignoreDetection();
         else if (intent === 'GIAI_THICH') explainMore();
-      }, [ignoreDetection, explainMore]),
+        else if (intent === 'XAC_NHAN') confirmDetection();
+      }, [ignoreDetection, explainMore, confirmDetection]),
     });
 
   // Auto-activate mic when pipeline pauses on a detection (hands-free workflow)
@@ -483,9 +497,41 @@ export default function Workspace() {
         {backendReachable === false && (
           <Box sx={{ mb: 2, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: 'rgba(211,47,47,0.08)', border: '1px solid rgba(211,47,47,0.3)', display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <AlertTriangle size={16} color="#D32F2F" />
-            <Typography sx={{ fontSize: '0.85rem', color: '#D32F2F', fontWeight: 500 }}>
-              Không kết nối được Backend ({(process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8001')}). Hãy khởi động server trước khi phân tích.
+            <Typography sx={{ fontSize: '0.85rem', color: '#D32F2F', fontWeight: 500, flex: 1 }}>
+              Backend offline ({(process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8001')}). Đang chờ kết nối lại…
             </Typography>
+          </Box>
+        )}
+
+        {/* Backend came back online — offer to reconnect without page reload */}
+        {backendJustCameBack && !isConnected && videoFile && (
+          <Box sx={{ mb: 2, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <AlertTriangle size={16} color="#D97706" />
+            <Typography sx={{ fontSize: '0.85rem', color: '#92400E', fontWeight: 500, flex: 1 }}>
+              Backend đã khởi động lại — session cũ bị mất.
+            </Typography>
+            <MuiButton
+              size="small"
+              variant="contained"
+              onClick={async () => {
+                setBackendJustCameBack(false);
+                resetAnalysis();
+                setTranscriptLog([]);
+                if (videoUrl) URL.revokeObjectURL(videoUrl);
+                setVideoUrl(null);
+                await handleFileSelected(videoFile);
+              }}
+              sx={{ borderRadius: '8px', backgroundColor: '#D97706', fontWeight: 700, fontSize: '0.8rem', whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#B45309' } }}
+            >
+              Phân tích lại
+            </MuiButton>
+            <MuiButton
+              size="small"
+              onClick={() => setBackendJustCameBack(false)}
+              sx={{ borderRadius: '8px', color: '#92400E', fontWeight: 600, fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+            >
+              Bỏ qua
+            </MuiButton>
           </Box>
         )}
 
@@ -648,23 +694,30 @@ export default function Workspace() {
                             )}
                           </Box>
                         )}
-                        {/* Action buttons */}
-                        <MuiButton
-                          size="small"
-                          variant="outlined"
-                          onClick={explainMore}
-                          sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#0277BD', color: '#4FC3F7' } }}
-                        >
-                          Giải thích
-                        </MuiButton>
-                        <MuiButton
-                          size="small"
-                          variant="contained"
-                          onClick={ignoreDetection}
-                          sx={{ borderRadius: '7px', backgroundColor: 'rgba(245,158,11,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#F59E0B' } }}
-                        >
-                          Bỏ qua
-                        </MuiButton>
+                        {/* Action buttons — change after LLM explained */}
+                        {llmInsight ? (
+                          <>
+                            <MuiButton size="small" variant="contained" onClick={confirmDetection}
+                              sx={{ borderRadius: '7px', backgroundColor: 'rgba(34,197,94,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#16A34A' } }}>
+                              Xác nhận
+                            </MuiButton>
+                            <MuiButton size="small" variant="outlined" onClick={ignoreDetection}
+                              sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#EF4444', color: '#FCA5A5' } }}>
+                              Bỏ qua
+                            </MuiButton>
+                          </>
+                        ) : (
+                          <>
+                            <MuiButton size="small" variant="outlined" onClick={explainMore}
+                              sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#0277BD', color: '#4FC3F7' } }}>
+                              Giải thích
+                            </MuiButton>
+                            <MuiButton size="small" variant="contained" onClick={ignoreDetection}
+                              sx={{ borderRadius: '7px', backgroundColor: 'rgba(245,158,11,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#F59E0B' } }}>
+                              Bỏ qua
+                            </MuiButton>
+                          </>
+                        )}
                       </Box>
                     )}
 
@@ -899,24 +952,29 @@ export default function Workspace() {
                     </Box>
                   </Box>
                   <Box sx={{ display: 'flex', gap: 1.25 }}>
-                    <MuiButton
-                      variant="outlined"
-                      fullWidth
-                      size="small"
-                      onClick={ignoreDetection}
-                      sx={{ borderRadius: '8px', borderColor: 'rgba(245,158,11,0.35)', color: '#B45309', fontWeight: 600, py: 1, '&:hover': { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: '#D97706' } }}
-                    >
-                      Bỏ qua
-                    </MuiButton>
-                    <MuiButton
-                      variant="contained"
-                      fullWidth
-                      size="small"
-                      onClick={explainMore}
-                      sx={{ borderRadius: '8px', backgroundColor: '#D97706', fontWeight: 600, py: 1, boxShadow: '0 4px 12px rgba(217,119,6,0.3)', '&:hover': { backgroundColor: '#B45309' } }}
-                    >
-                      Giải thích thêm
-                    </MuiButton>
+                    {llmInsight ? (
+                      <>
+                        <MuiButton variant="outlined" fullWidth size="small" onClick={ignoreDetection}
+                          sx={{ borderRadius: '8px', borderColor: 'rgba(245,158,11,0.35)', color: '#B45309', fontWeight: 600, py: 1, '&:hover': { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: '#D97706' } }}>
+                          Bỏ qua
+                        </MuiButton>
+                        <MuiButton variant="contained" fullWidth size="small" onClick={confirmDetection}
+                          sx={{ borderRadius: '8px', backgroundColor: '#16A34A', fontWeight: 600, py: 1, boxShadow: '0 4px 12px rgba(22,163,74,0.3)', '&:hover': { backgroundColor: '#15803D' } }}>
+                          Xác nhận
+                        </MuiButton>
+                      </>
+                    ) : (
+                      <>
+                        <MuiButton variant="outlined" fullWidth size="small" onClick={ignoreDetection}
+                          sx={{ borderRadius: '8px', borderColor: 'rgba(245,158,11,0.35)', color: '#B45309', fontWeight: 600, py: 1, '&:hover': { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: '#D97706' } }}>
+                          Bỏ qua
+                        </MuiButton>
+                        <MuiButton variant="contained" fullWidth size="small" onClick={explainMore}
+                          sx={{ borderRadius: '8px', backgroundColor: '#D97706', fontWeight: 600, py: 1, boxShadow: '0 4px 12px rgba(217,119,6,0.3)', '&:hover': { backgroundColor: '#B45309' } }}>
+                          Giải thích thêm
+                        </MuiButton>
+                      </>
+                    )}
                   </Box>
                 </MotionBox>
               )}
@@ -967,10 +1025,18 @@ export default function Workspace() {
                     </Box>
                   ) : llmInsight ? (
                     <MotionBox initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
-                      <Box sx={{ backgroundColor: 'rgba(0,96,100,0.05)', borderRadius: '12px', borderLeft: '3px solid #006064', p: 2 }}>
-                        <Typography sx={{ fontSize: '0.875rem', lineHeight: 1.75, color: 'text.primary', whiteSpace: 'pre-wrap' }}>
-                          {llmInsight}
-                        </Typography>
+                      <Box sx={{
+                        backgroundColor: 'rgba(0,96,100,0.05)',
+                        borderRadius: '12px',
+                        borderLeft: '3px solid #006064',
+                        p: 2,
+                        '& p': { margin: '0 0 8px', fontSize: '0.875rem', lineHeight: 1.75, color: 'text.primary' },
+                        '& p:last-child': { marginBottom: 0 },
+                        '& strong': { fontWeight: 700, color: '#004D40' },
+                        '& ul, & ol': { paddingLeft: '1.25rem', margin: '4px 0 8px' },
+                        '& li': { fontSize: '0.875rem', lineHeight: 1.7, color: 'text.primary', marginBottom: '2px' },
+                      }}>
+                        <ReactMarkdown>{llmInsight}</ReactMarkdown>
                       </Box>
                     </MotionBox>
                   ) : (
