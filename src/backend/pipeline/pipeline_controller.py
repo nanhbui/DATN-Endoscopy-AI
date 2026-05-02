@@ -33,11 +33,18 @@ _env_model = _os.environ.get("ENDOSCOPY_MODEL")
 if _env_model and Path(_env_model).exists():
     DEFAULT_MODEL = Path(_env_model)
 else:
-    DEFAULT_MODEL = _REPO_ROOT / "sample_code/endocv_2024/model_yolo/daday.pt"
+    # Prefer the latest full-scope model; fall back to legacy then generic
+    DEFAULT_MODEL = _REPO_ROOT / "models" / "best_train6.pt"
+    if not DEFAULT_MODEL.exists():
+        DEFAULT_MODEL = _REPO_ROOT / "sample_code/endocv_2024/model_yolo/daday.pt"
     if not DEFAULT_MODEL.exists():
         DEFAULT_MODEL = _REPO_ROOT / "yolov8n.pt"
 
 CONFIDENCE_THRESHOLD = float(_os.environ.get("ENDOSCOPY_CONF", "0.45"))
+
+# ── StrongSORT Re-ID weights ─────────────────────────────────────────────────
+_DEFAULT_REID = _REPO_ROOT / "sample_code/endocv_2024/osnet_x0_25_endocv_30.pt"
+REID_WEIGHTS = Path(_os.environ.get("ENDOSCOPY_REID", str(_DEFAULT_REID)))
 
 # Endoscopy viewport width (pixels) — the circular scope view occupies the left
 # portion of the 1920-wide frame; the right side is the patient info/thumbnail panel.
@@ -49,10 +56,9 @@ VIEWPORT_W = int(_os.environ.get("ENDOSCOPY_VIEWPORT_W", str(VIEWPORT_W)))
 # Skip this many frames at the start of every video (scope insertion / title cards)
 SKIP_INITIAL_FRAMES = 90   # ≈ 3 s at 30 fps
 
-# Process every Nth frame — set higher on CPU to avoid multi-hour wait
-# GPU server: 3 (fast)  |  Local CPU: 30 (1 frame/sec at 30fps)
-import os as _os_frame
-FRAME_STEP = int(_os_frame.environ.get("FRAME_STEP", "3"))
+# Process every Nth frame — 1 matches sample_code behaviour (best accuracy)
+# Set FRAME_STEP=3 in .env on CPU-only servers to avoid multi-hour waits
+FRAME_STEP = int(_os.environ.get("FRAME_STEP", "1"))
 
 
 # ── Pipeline States ──────────────────────────────────────────────────────────
@@ -92,11 +98,12 @@ def _state_event(state: PipelineState) -> dict:
 
 def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                      result_q: "_mp.Queue[dict]", cmd_q: "_mp.Queue[str]",
+                     reid_weights_str: str = "",
                      gstshark_enabled: bool = False,
                      gstshark_plugin_path: str = "",
                      gstshark_log_dir: str = "/tmp/gst-shark",
                      gstshark_tracers: str = "framerate;proctime;interlatency") -> None:
-    """Runs in isolated subprocess: GStreamer decode + YOLO inference.
+    """Runs in isolated subprocess: GStreamer decode + YOLO inference + StrongSORT tracking.
 
     Sends detection/state events to result_q.
     Receives commands from cmd_q: STOP | RESUME | IGNORE:<fi>:<json>
@@ -133,7 +140,19 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         import torch
         from ultralytics import YOLO
         model = YOLO(model_path_str)
+        model.fuse()  # fuse Conv+BN layers → faster inference
         model_names = model.names or {}
+
+        # Override numeric-prefixed class names with clean Vietnamese labels
+        _labels_txt = _os.path.join(_os.path.dirname(model_path_str), "labels.txt")
+        if _os.path.exists(_labels_txt):
+            try:
+                with open(_labels_txt, encoding="utf-8") as _lf:
+                    _label_lines = [l.strip() for l in _lf if l.strip()]
+                model_names = {i: _label_lines[i] for i in range(len(_label_lines)) if i in model_names}
+                print(f"[Worker] Labels from labels.txt: {model_names}", flush=True)
+            except Exception as _le:
+                print(f"[Worker] Labels load failed: {_le}", flush=True)
 
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
         if torch.cuda.is_available():
@@ -153,6 +172,42 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     except Exception as exc:
         print(f"[Worker] YOLO load/warm-up failed: {exc}", flush=True)
 
+    # ── StrongSORT tracker ────────────────────────────────────────────────
+    tracker = None
+    try:
+        import torch as _torch
+        from boxmot.trackers.strongsort.strongsort import StrongSort
+        _reid_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), reid_weights_str) if reid_weights_str and not _os.path.isabs(reid_weights_str) else reid_weights_str
+        if reid_weights_str and _os.path.exists(reid_weights_str):
+            _device = _torch.device("cuda:0" if _torch.cuda.is_available() else "cpu")
+            tracker = StrongSort(
+                reid_weights=_os.path.abspath(reid_weights_str),
+                device=_device,
+                half=_torch.cuda.is_available(),
+                n_init=1,          # confirm track after 1 hit
+                max_age=300,       # keep lost track alive for 300 frames (scope can leave FOV)
+                max_iou_dist=0.85, # relaxed vs original 0.7; scope moves but different lesions rarely overlap
+                max_cos_dist=0.4,  # relaxed: appearance changes under scope lighting
+            )
+            print(f"[Worker] StrongSORT tracker ON ({_device})", flush=True)
+        else:
+            print(f"[Worker] ReID weights not found ({reid_weights_str}), tracker disabled", flush=True)
+    except Exception as _te:
+        print(f"[Worker] StrongSORT init failed: {_te} — falling back to no tracker", flush=True)
+
+    # Spatial-temporal dedup: suppress same lesion area within a time window.
+    # Track-ID-based dedup was fragile: max_age=300 causes the tracker to
+    # re-associate returning lesions with old IDs, silently skipping them.
+    _DEDUP_WINDOW_MS = int(_os.environ.get("DEDUP_WINDOW_MS", "10000"))  # 10 s
+    _DEDUP_IOU = 0.25  # ≥25% overlap = same region
+    _reported_history: list[dict] = []  # {ts_ms, bbox (1920×1080 norm), label}
+
+    def _is_recently_reported(ts_ms: int, bbox: list, label: str) -> bool:
+        for r in _reported_history:
+            if ts_ms - r["ts_ms"] < _DEDUP_WINDOW_MS and r["label"] == label and _iou(r["bbox"], bbox) >= _DEDUP_IOU:
+                return True
+        return False
+
     # ── GStreamer pipeline ────────────────────────────────────────────────
     try:
         import gi
@@ -167,7 +222,8 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     # No format caps on appsink — BGR caps cause back-propagation into decodebin and fail.
     # Format conversion to BGR is done in Python after pulling the sample.
     _SCALE = "videoscale ! video/x-raw,width=640 ! videoconvert"
-    _SINK_TAIL = "appsink name=sink sync=false max-buffers=4 drop=true"
+    # No drop=true: back-pressure ensures GStreamer doesn't race past the current frame.
+    _SINK_TAIL = "appsink name=sink sync=false max-buffers=4"
 
     _src = video_path_str
     is_live = _src.startswith(("rtsp://", "rtp://", "rtmp://")) or _src.startswith("/dev/video")
@@ -185,8 +241,9 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     _h264dec = "nvh264dec" if _use_nvdec else "avdec_h264"
     print(f"[Worker] H.264 decoder: {_h264dec}", flush=True)
 
-    # Queue with leaky=downstream prevents GStreamer from stalling when appsink is busy.
-    _QUEUE = "queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 leaky=downstream"
+    # Back-pressure queue: no leaky flag so GStreamer blocks when appsink is full.
+    # This prevents GStreamer racing ahead to EOS while Python (YOLO/user input) is paused.
+    _QUEUE = "queue max-size-buffers=4 max-size-time=0 max-size-bytes=0"
 
     if _src.startswith(("rtsp://", "rtp://", "rtmp://")):
         pipeline_str = (
@@ -199,11 +256,40 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         )
     else:
         is_live = False
-        # Explicit CPU decoder pipeline — avoids NVMM (GPU memory) buffers from nvv4l2decoder
-        # which cannot be mapped to system memory via buf.map()
-        pipeline_str = (
-            f'filesrc location="{_src}" ! qtdemux ! h264parse ! avdec_h264 ! videoconvert ! {_QUEUE} ! {_SINK_TAIL}'
-        )
+        # Detect codec via ffprobe to pick the right software decoder.
+        # Avoids decodebin selecting hardware decoders (nvv4l2decoder) that output
+        # NVMM GPU buffers — those cannot be read by buf.map() in Python.
+        import subprocess as _sp
+        _codec = "h264"  # default
+        try:
+            _probe = _sp.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1",
+                 _src],
+                capture_output=True, text=True, timeout=10,
+            )
+            _codec = _probe.stdout.strip() or "h264"
+        except Exception as _e:
+            print(f"[Worker] ffprobe failed ({_e}), assuming h264", flush=True)
+
+        print(f"[Worker] Detected codec: {_codec}", flush=True)
+        if _codec == "h264":
+            pipeline_str = (
+                f'filesrc location="{_src}" ! qtdemux ! h264parse ! avdec_h264 ! videoconvert ! {_QUEUE} ! {_SINK_TAIL}'
+            )
+        elif _codec == "hevc":
+            pipeline_str = (
+                f'filesrc location="{_src}" ! qtdemux ! h265parse ! avdec_h265 ! videoconvert ! {_QUEUE} ! {_SINK_TAIL}'
+            )
+        elif _codec == "mpeg4":
+            # qtdemux + explicit software decoder — avoids NVMM buffers on GPU servers
+            pipeline_str = (
+                f'filesrc location="{_src}" ! qtdemux ! avdec_mpeg4 ! videoconvert ! {_QUEUE} ! {_SINK_TAIL}'
+            )
+        else:
+            pipeline_str = (
+                f'filesrc location="{_src}" ! decodebin ! videoconvert ! {_QUEUE} ! {_SINK_TAIL}'
+            )
 
     # Live sources have no blank-frame header — skip the initial-frame filter
     _skip = 0 if is_live else SKIP_INITIAL_FRAMES
@@ -211,8 +297,22 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     sink = gst_pipeline.get_by_name("sink")
     sink.set_property("emit-signals", False)
     gst_pipeline.set_state(Gst.State.PLAYING)
+    # Wait briefly for state transition so pads are fully negotiated before dumping
+    gst_pipeline.get_state(Gst.SECOND)
     bus = gst_pipeline.get_bus()
     print("[Worker] GStreamer PLAYING", flush=True)
+
+    # Dump pipeline topology using dot_data (no GST_DEBUG_DUMP_DOT_DIR env needed)
+    _dot_dir = _os.environ.get("GST_DEBUG_DUMP_DOT_DIR", "/tmp/gst-dot")
+    _os.makedirs(_dot_dir, exist_ok=True)
+    try:
+        _dot_data = Gst.debug_bin_to_dot_data(gst_pipeline, Gst.DebugGraphDetails.ALL)
+        _dot_path = _os.path.join(_dot_dir, "endoscopy_pipeline.dot")
+        with open(_dot_path, "w") as _f:
+            _f.write(_dot_data)
+        print(f"[Worker] Pipeline DOT → {_dot_path}", flush=True)
+    except Exception as _dot_exc:
+        print(f"[Worker] DOT dump skipped: {_dot_exc}", flush=True)
 
     # ── Inline ignore memory (no import path issues in subprocess) ─────────
     _ignored: list[dict] = []
@@ -244,13 +344,15 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
         if fi < _skip:
             return False
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Evaluate brightness on viewport crop only (left 68% excludes info panel)
+        _vw_crop = int(frame.shape[1] * (1300 / 1920))
+        gray = cv2.cvtColor(frame[:, :_vw_crop], cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
 
-        # Endoscopy viewport is a bright circle on a black border.
-        # If < 15 % of pixels are bright the scope is being inserted/withdrawn.
+        # Endoscopy viewport is a bright circle on a black border (~60-70% fill).
+        # If < 5% of viewport pixels are bright the scope is not yet inserted.
         bright_frac = float(np.sum(gray > 25)) / (h * w)
-        if bright_frac < 0.15:
+        if bright_frac < 0.05:
             return False
 
         # Center region must have some content (not completely dark center)
@@ -268,14 +370,17 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
 
     def _crop_b64(frame: np.ndarray, bbox: list) -> Optional[str]:
         try:
+            h, w = frame.shape[:2]
+            _vw = int(w * (1300 / 1920))  # left 68% = scope viewport (scales with frame)
+            out = frame[:, :_vw].copy()
+            # Draw bbox so the doctor sees exactly what triggered the detection
             x1, y1, x2, y2 = map(int, bbox)
-            crop = frame[max(0, y1):y2, max(0, x1):x2]
-            # Limit thumbnail to 320px on longest side
-            h, w = crop.shape[:2]
-            if max(h, w) > 320:
-                scale = 320 / max(h, w)
-                crop = cv2.resize(crop, (int(w * scale), int(h * scale)))
-            ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 255), 3)
+            # Scale to max 800px wide to keep payload reasonable
+            scale = min(1.0, 800 / max(out.shape[1], out.shape[0]))
+            if scale < 1.0:
+                out = cv2.resize(out, (int(out.shape[1] * scale), int(out.shape[0] * scale)))
+            ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
                 return base64.b64encode(buf.tobytes()).decode()
         except Exception:
@@ -361,77 +466,111 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                 print(f"[Worker] Frame shape: {frame.shape} (h×w×c)", flush=True)
             if model is not None and frame_index % FRAME_STEP == 0 and _is_diagnostic_frame(frame, frame_index):
                 try:
-                    # Crop to viewport only — removes info panel on the right so
-                    # model receives the same scale it was trained on (viewport crops).
-                    # x-coords from YOLO are still valid in full-frame space (same left origin).
-                    _vw = VIEWPORT_W if frame.shape[1] > VIEWPORT_W else frame.shape[1]
+                    # Crop left 68% — removes info panel; x-coords valid in full-frame space.
+                    _vw = int(frame.shape[1] * (1300 / 1920))
                     frame_inf = frame[:, :_vw]
+                    _fh, _fw = frame_inf.shape[:2]
+
                     results = model(frame_inf, conf=conf, verbose=False)
+
+                    # ── Build raw detections array for tracker [x1,y1,x2,y2,conf,cls] ──
+                    raw_dets = []
                     for result in results:
-                        if result.boxes is None or len(result.boxes) == 0:
+                        if result.boxes is None:
                             continue
                         for box in result.boxes:
                             if box.conf is None or box.conf.shape[0] == 0:
                                 continue
-                            det_conf = float(box.conf[0])
-                            cls_id = int(box.cls[0])
-                            label = model_names.get(cls_id, f"class_{cls_id}")
-                            xyxy = box.xyxy[0].tolist()
-
-                            if _is_ignored(frame_index, xyxy):
+                            _bx1, _by1, _bx2, _by2 = box.xyxy[0].tolist()
+                            _bcx = (_bx1 + _bx2) / 2
+                            # Drop info-panel FPs
+                            if _bcx > _fw:
                                 continue
+                            raw_dets.append([_bx1, _by1, _bx2, _by2, float(box.conf[0]), int(box.cls[0])])
 
-                            _fh, _fw = frame.shape[:2]
-                            _x1, _y1, _x2, _y2 = xyxy
-                            _bw, _bh = _x2 - _x1, _y2 - _y1
-                            _cx, _cy = (_x1 + _x2) / 2, (_y1 + _y2) / 2
+                    if not raw_dets:
+                        frame_index += 1
+                        continue
 
-                            # Skip detections outside the circular endoscopy viewport.
-                            # The scope viewport is a circle centred at (~640, ~540) with r~520
-                            # in a 1920×1080 frame. Detections in corners/overlays are FP.
-                            _VCX, _VCY, _VR = 640, 540, 520
-                            if (_cx - _VCX) ** 2 + (_cy - _VCY) ** 2 > _VR ** 2:
-                                print(f"[Worker] Skipped out-of-viewport bbox center ({_cx:.0f},{_cy:.0f})", flush=True)
-                                continue
+                    dets_np = np.array(raw_dets, dtype=np.float32)
 
-                            # Skip truly absurd detections (> 70% frame area)
-                            if (_bw * _bh) / (_fw * _fh) > 0.70:
-                                print(f"[Worker] Skipped oversized bbox ({(_bw*_bh)/(_fw*_fh)*100:.0f}% of frame)", flush=True)
-                                continue
+                    # ── Update tracker (or fall back to raw YOLO boxes) ──────────
+                    if tracker is not None:
+                        tracks = tracker.update(dets_np, frame_inf)
+                        # tracks: [x1,y1,x2,y2,track_id,conf,cls,det_ind]
+                        if len(tracks) == 0:
+                            frame_index += 1
+                            continue
+                        track_boxes = tracks
+                        use_tracker = True
+                    else:
+                        # No tracker: use raw detections, fake track_id=0
+                        track_boxes = [[*d[:4], 0, d[4], d[5], 0] for d in raw_dets]
+                        use_tracker = False
 
-                            # Cap bbox to 60% of frame in each axis (centred), then clamp to frame
-                            _bw = min(_bw, _fw * 0.60)
-                            _bh = min(_bh, _fh * 0.60)
-                            # Enforce 2% margin from edges so bbox never touches the rounded border
-                            _mx, _my = _fw * 0.02, _fh * 0.02
-                            _x1 = max(_mx, _cx - _bw / 2)
-                            _y1 = max(_my, _cy - _bh / 2)
-                            _x2 = min(_fw - _mx, _x1 + _bw)
-                            _y2 = min(_fh - _my, _y1 + _bh)
-                            xyxy = [_x1, _y1, _x2, _y2]
+                    for trk in track_boxes:
+                        _x1, _y1, _x2, _y2 = float(trk[0]), float(trk[1]), float(trk[2]), float(trk[3])
+                        track_id = int(trk[4])
+                        det_conf  = float(trk[5])
+                        cls_id    = int(trk[6])
+                        label     = model_names.get(cls_id, f"class_{cls_id}")
 
-                            print(f"[Worker] Detection bbox: {[round(v,1) for v in xyxy]} ({(_bw*_bh)/(_fw*_fh)*100:.0f}% frame) in {frame.shape[1]}x{frame.shape[0]}", flush=True)
-                            location = _infer_location(xyxy, frame.shape)
-                            thumbnail_b64 = _crop_b64(frame, xyxy)
-                            det_data = {
-                                "frame_index": frame_index,
-                                "timestamp_ms": timestamp_ms,
-                                "location": location,
-                                "lesion": {
-                                    "label": label,
-                                    "confidence": round(det_conf, 4),
-                                    "bbox": xyxy,
-                                },
-                                "frame_b64": thumbnail_b64,
-                            }
-                            confirmed.append(det_data)
-                            result_q.put({"event": "DETECTION_FOUND", "data": det_data})
-                            paused = True
-                            break   # one detection per frame
-                        if paused:
-                            break
+                        if _is_ignored(frame_index, [_x1, _y1, _x2, _y2]):
+                            continue
+
+                        _bw, _bh = _x2 - _x1, _y2 - _y1
+
+                        # Skip absurd detections (> 70% frame area)
+                        if (_bw * _bh) / (_fw * _fh) > 0.70:
+                            print(f"[Worker] Skipped oversized bbox ({(_bw*_bh)/(_fw*_fh)*100:.0f}%)", flush=True)
+                            continue
+
+                        # Preserve raw YOLO geometry; add small uniform padding
+                        _PAD = 8.0
+                        _x1 = max(0.0, _x1 - _PAD)
+                        _y1 = max(0.0, _y1 - _PAD)
+                        _x2 = min(float(_fw), _x2 + _PAD)
+                        _y2 = min(float(_fh), _y2 + _PAD)
+                        xyxy = [_x1, _y1, _x2, _y2]
+
+                        # Normalize bbox to 1920×1080 virtual space so the frontend
+                        # coordinate constants (FRAME_W=1920, FRAME_H=1080) remain
+                        # correct regardless of the actual source video resolution.
+                        _fw_full = frame.shape[1]  # full frame width before crop
+                        _fh_full = frame.shape[0]
+                        xyxy_norm = [
+                            xyxy[0] / _fw_full * 1920,
+                            xyxy[1] / _fh_full * 1080,
+                            xyxy[2] / _fw_full * 1920,
+                            xyxy[3] / _fh_full * 1080,
+                        ]
+
+                        # Spatial-temporal dedup (replaces track-ID dedup which was
+                        # broken by max_age keeping old IDs alive too long)
+                        if _is_recently_reported(timestamp_ms, xyxy_norm, label):
+                            continue
+
+                        print(f"[Worker] Detection track_id={track_id} {label} conf={det_conf:.2f} bbox={[round(v,1) for v in xyxy]}", flush=True)
+                        location = _infer_location(xyxy, frame.shape)
+                        thumbnail_b64 = _crop_b64(frame, xyxy)  # uses viewport-crop coords
+                        det_data = {
+                            "frame_index": frame_index,
+                            "timestamp_ms": timestamp_ms,
+                            "location": location,
+                            "lesion": {
+                                "label": label,
+                                "confidence": round(det_conf, 4),
+                                "bbox": xyxy_norm,  # normalized to 1920×1080
+                            },
+                            "frame_b64": thumbnail_b64,
+                        }
+                        _reported_history.append({"ts_ms": timestamp_ms, "bbox": xyxy_norm, "label": label})
+                        confirmed.append(det_data)
+                        result_q.put({"event": "DETECTION_FOUND", "data": det_data})
+                        paused = True
+                        break  # one detection per frame
                 except Exception as exc:
-                    print(f"[Worker] YOLO error frame {frame_index}: {exc}", flush=True)
+                    print(f"[Worker] YOLO/tracker error frame {frame_index}: {exc}", flush=True)
 
             frame_index += 1
 
@@ -488,12 +627,22 @@ class PipelineController:
         if self._proc and self._proc.is_alive():
             return
 
+        # Clear GstShark logs so metrics reflect only this session
+        if _GSTSHARK_ENABLED:
+            import glob as _glob
+            for _f in _glob.glob(f"{_GSTSHARK_LOG_DIR}/*.log"):
+                try:
+                    open(_f, "w").close()
+                except OSError:
+                    pass
+
         self._result_q = _mp_ctx.Queue()
         self._cmd_q = _mp_ctx.Queue()
         self._proc = _mp_ctx.Process(
             target=_pipeline_worker,
             args=(str(video_path), str(self._model_path), CONFIDENCE_THRESHOLD,
                   self._result_q, self._cmd_q,
+                  str(REID_WEIGHTS),
                   _GSTSHARK_ENABLED, _GSTSHARK_PLUGIN_PATH,
                   _GSTSHARK_LOG_DIR, _GSTSHARK_TRACERS),
             daemon=True,
@@ -517,6 +666,7 @@ class PipelineController:
             if self._cmd_q:
                 self._cmd_q.put(cmd)
             self._pending = None
+            self._set_state(PipelineState.PLAYING)
         elif action == "ACTION_EXPLAIN":
             self._set_state(PipelineState.PROCESSING_LLM)
             # Pipeline stays paused in subprocess; WS server handles LLM streaming.

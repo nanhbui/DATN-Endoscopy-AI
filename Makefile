@@ -27,7 +27,7 @@
         docker-up docker-down docker-logs docker-build \
         lint test env-check env-init clean \
         vpn-status vpn-up vpn-down \
-        ssh gpu-status remote-dev remote-down remote-logs remote-install sync
+        ssh tunnel gpu-status remote-dev remote-down remote-logs remote-install sync
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 ROOT        := $(shell pwd)
@@ -80,6 +80,7 @@ help:
 	@echo "  $(GREEN)make vpn-up$(RESET)           Connect VPN (\"$(VPN_NAME)\")"
 	@echo "  $(GREEN)make vpn-down$(RESET)         Disconnect VPN"
 	@echo "  $(GREEN)make ssh$(RESET)              Open interactive SSH shell"
+	@echo "  $(GREEN)make tunnel$(RESET)           SSH tunnel port 8001 (bypass firewall)"
 	@echo "  $(GREEN)make gpu-status$(RESET)       Run nvidia-smi on remote server"
 	@echo "  $(GREEN)make sync$(RESET)             rsync local code → remote server"
 	@echo "  $(GREEN)make remote-install$(RESET)   pip install on remote server"
@@ -248,6 +249,11 @@ _require-vpn:
 ssh: _require-vpn
 	@echo "$(CYAN)Connecting to $(GPU_USER)@$(GPU_HOST)…$(RESET)"
 	ssh $(SSH_OPTS) $(GPU_USER)@$(GPU_HOST)
+
+tunnel: _require-vpn
+	@echo "$(CYAN)SSH tunnel: localhost:8001 → $(GPU_HOST):8001$(RESET)"
+	@echo "$(YELLOW)Keep this terminal open while using the app. Ctrl-C to stop.$(RESET)"
+	ssh $(SSH_OPTS) -N -L 8001:localhost:8001 $(GPU_USER)@$(GPU_HOST)
 
 gpu-status: _require-vpn
 	@echo "$(CYAN)── GPU server: nvidia-smi ────────────────────$(RESET)"

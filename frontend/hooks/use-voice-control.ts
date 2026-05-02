@@ -94,8 +94,10 @@ export function useVoiceControl({ onIntent }: UseVoiceControlOptions) {
 
   useEffect(() => {
     console.log("[VoiceControl] mount — checking SpeechRecognition support");
-    console.log("[VoiceControl] window.SpeechRecognition:", !!window.SpeechRecognition);
-    console.log("[VoiceControl] window.webkitSpeechRecognition:", !!window.webkitSpeechRecognition);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    console.log("[VoiceControl] window.SpeechRecognition:", !!(window as any).SpeechRecognition);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    console.log("[VoiceControl] window.webkitSpeechRecognition:", !!(window as any).webkitSpeechRecognition);
     setSupported(
       typeof window !== "undefined" &&
       ("SpeechRecognition" in window || "webkitSpeechRecognition" in window),
@@ -158,14 +160,17 @@ export function useVoiceControl({ onIntent }: UseVoiceControlOptions) {
         }
       }
 
-      // ── Final: classify only if nothing was fired during interim ────────────
+      // ── Final: always log transcript; classify intent only if no interim fired ──
       if (finalText.trim()) {
         setTranscript(finalText);
         const alreadyFired = lastFiredEndRef.current > 0;
-        lastFiredEndRef.current = 0; // new result slot — reset offset
-        if (!alreadyFired) {
+        lastFiredEndRef.current = 0;
+        if (alreadyFired) {
+          // Interim already fired an intent — still log the full final text
+          onIntentRef.current("UNKNOWN", finalText.trim());
+        } else {
           classifyIntent(finalText.trim()).then(intent => {
-            if (intent !== "UNKNOWN") onIntentRef.current(intent, finalText.trim());
+            onIntentRef.current(intent, finalText.trim());
           });
         }
       }

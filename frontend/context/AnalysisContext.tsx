@@ -15,11 +15,15 @@ import {
   EndoscopyWsClient,
   uploadVideo,
   connectLiveStream,
+  selectLibraryVideo,
   type DetectionData,
   type ServerEvent,
 } from "@/lib/ws-client";
 
 // ── Domain types ──────────────────────────────────────────────────────────────
+
+/** Outcome of a detection after doctor interaction. */
+export type DetectionStatus = "detected" | "ignored" | "confirmed" | "analyzed";
 
 /** Detection as used internally by the context (mirrors DetectionData). */
 export interface Detection {
@@ -29,6 +33,8 @@ export interface Detection {
   timestamp: number;
   anatomicalLocation: string;
   frame_b64?: string;
+  llmInsight?: string;
+  status?: DetectionStatus;
 }
 
 export type PipelineState =
@@ -52,16 +58,23 @@ interface AnalysisContextType {
   detections: Detection[];
 
   // ── actions ──
+  uploadOnly: (file: File, onProgress?: (pct: number) => void) => Promise<void>;
   uploadAndConnect: (file: File, onProgress?: (pct: number) => void) => Promise<void>;
   connectLive: (source: string) => Promise<void>;
+  prepareFromLibrary: (libraryId: string) => Promise<string>;
+  selectFromLibrary: (libraryId: string) => Promise<void>;
   startMockAnalysis: () => void;
+  /** Reset WS + pipeline state to IDLE while keeping videoId — allows re-running analysis on the same video. */
+  resetPipeline: () => void;
   ignoreDetection: () => void;
   explainMore: () => void;
+  followUpChat: (text: string) => void;
   /** Confirm detection as valid → resume pipeline. */
   confirmDetection: () => void;
   resumePlayback: () => void;
   setIsPlaying: (v: boolean) => void;
   addDetection: (d: Detection) => void;
+  removeDetection: (timestamp: number) => void;
   resetAnalysis: () => void;
 }
 
@@ -101,6 +114,9 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   const [detections, setDetections] = useState<Detection[]>([]);
 
   const wsRef = useRef<EndoscopyWsClient | null>(null);
+  const llmInsightRef = useRef("");
+  // Prevents duplicate ACTION_EXPLAIN before server STATE_CHANGE PROCESSING_LLM arrives
+  const explainInFlightRef = useRef(false);
 
   const detectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const llmTypingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -125,7 +141,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
         }
         if (s === "PROCESSING_LLM") {
           setIsListeningVoice(true);
-          setLlmInsight("");
+          llmInsightRef.current = ""; setLlmInsight("");
         }
         break;
       }
@@ -136,24 +152,31 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
         break;
       }
       case "LLM_CHUNK":
-        setLlmInsight((prev) => prev + evt.data.chunk);
+        llmInsightRef.current += evt.data.chunk;
+        setLlmInsight(llmInsightRef.current);
         break;
-      case "LLM_DONE":
-        // After explanation, go back to waiting for doctor's decision
+      case "LLM_DONE": {
+        explainInFlightRef.current = false;
         setIsListeningVoice(false);
         setPipelineState("PAUSED_WAITING_INPUT");
+        const insight = llmInsightRef.current;
+        setDetections(prev => prev.map((d, i) => i === 0 ? { ...d, llmInsight: insight || d.llmInsight, status: "analyzed" } : d));
         break;
+      }
       case "VIDEO_FINISHED": {
         setPipelineState("EOS_SUMMARY");
-        const confirmed = evt.data.detections.map(toDetection);
-        setDetections(confirmed);
         setIsConnected(false);
+        // Null out the client ref so stale ignoreDetection/confirmDetection calls
+        // don't override EOS_SUMMARY with PLAYING via the wsRef.current check.
+        wsRef.current?.disconnect();
+        wsRef.current = null;
         break;
       }
       case "ERROR":
         console.error("[WS] server error:", evt.data.message);
         if (evt.data.message?.includes("Session not found")) {
           wsRef.current?.disconnect();
+          wsRef.current = null;
           setIsConnected(false);
           setPipelineState("IDLE");
           setVideoId(null);
@@ -177,6 +200,14 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
 
   // ── Public actions ────────────────────────────────────────────────────────
 
+  const uploadOnly = useCallback(async (
+    file: File,
+    onProgress?: (pct: number) => void,
+  ) => {
+    const { video_id } = await uploadVideo(file, onProgress);
+    setVideoId(video_id);
+  }, []);
+
   const uploadAndConnect = useCallback(async (
     file: File,
     onProgress?: (pct: number) => void,
@@ -192,6 +223,20 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     connectWs(video_id);
   }, [connectWs]);
 
+  /** Registers the library video with the backend and stores video_id — no WS connection.
+   *  Returns the video_id so the caller can build a preview URL. */
+  const prepareFromLibrary = useCallback(async (libraryId: string): Promise<string> => {
+    const { video_id } = await selectLibraryVideo(libraryId);
+    setVideoId(video_id);
+    return video_id;
+  }, []);
+
+  const selectFromLibrary = useCallback(async (libraryId: string) => {
+    const { video_id } = await selectLibraryVideo(libraryId);
+    setVideoId(video_id);
+    connectWs(video_id);
+  }, [connectWs]);
+
   const startMockAnalysis = useCallback(() => {
     if (videoId) {
       connectWs(videoId);
@@ -201,7 +246,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     setPipelineState("PLAYING");
     setCurrentDetection(null);
     setIsListeningVoice(false);
-    setLlmInsight("");
+    llmInsightRef.current = ""; setLlmInsight("");
 
     detectionTimerRef.current = setTimeout(() => {
       const mock: Detection = {
@@ -220,25 +265,48 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   const ignoreDetection = useCallback(() => {
     if (wsRef.current) {
       wsRef.current.send({ action: "ACTION_IGNORE" });
-    } else {
+      setDetections(prev => prev.map((d, i) => i === 0 ? { ...d, status: "ignored" } : d));
+      setPipelineState("PLAYING");
       setCurrentDetection(null);
-      setLlmInsight("");
+      llmInsightRef.current = ""; setLlmInsight("");
       setIsListeningVoice(false);
-      startMockAnalysis();
+    } else {
+      // Pure mock mode (no real session). Never call startMockAnalysis when a videoId
+      // exists — that would reconnect to the backend and restart from frame 0.
+      setDetections(prev => prev.map((d, i) => i === 0 ? { ...d, status: "ignored" } : d));
+      setCurrentDetection(null);
+      llmInsightRef.current = ""; setLlmInsight("");
+      setIsListeningVoice(false);
+      if (!videoId) startMockAnalysis();
     }
-  }, [startMockAnalysis]);
+  }, [startMockAnalysis, videoId]);
 
   const explainMore = useCallback(() => {
     if (wsRef.current) {
+      if (explainInFlightRef.current) return; // block duplicate before server acks
+      explainInFlightRef.current = true;
+      // Optimistic state update — voice pipelineStateRef check blocks any next call
+      setPipelineState("PROCESSING_LLM");
+      setIsListeningVoice(true);
+      llmInsightRef.current = ""; setLlmInsight("");
       wsRef.current.send({ action: "ACTION_EXPLAIN" });
       return;
     }
     // mock fallback
     clearMockTimers();
     setIsListeningVoice(true);
-    setLlmInsight("");
+    llmInsightRef.current = ""; setLlmInsight("");
     const text =
-      "Phát hiện phù hợp với tổn thương dạng viêm loét dạ dày, bờ viền đáy không đều và có sung huyết xung quanh. Độ tin cậy của mô hình ở mức cao. Khuyến nghị: đối chiếu triệu chứng lâm sàng, cân nhắc sinh thiết nếu tổn thương không đáp ứng điều trị nội khoa.";
+`**Phân loại Paris:** 0-III (loét) — Tổn thương lõm sâu, bờ viền không đều, có vùng sung huyết xung quanh, kích thước ước tính 8–12mm.
+
+**Nhận định lâm sàng:** Tiền ung thư / nghi ngờ — bờ fibrin không đều, sung huyết lan toả gợi ý nguy cơ loét ác tính. Cần phân biệt với ung thư dạ dày type 0-III sớm.
+
+**Checklist hành động:**
+- [ ] Sinh thiết ≥ 5 mảnh từ bờ và đáy tổn thương
+- [ ] Nhuộm CLO-test tại chỗ để kiểm tra H. pylori
+- [ ] Chụp ảnh NBI/ChromoEndoscopy nếu có thiết bị
+- [ ] Ghi nhận vị trí (hang vị / thân vị / tâm vị) trong biên bản
+- [ ] Hẹn tái khám 6–8 tuần sau điều trị ức chế acid`;
     let idx = 0;
     llmTypingTimerRef.current = setInterval(() => {
       idx++;
@@ -252,13 +320,20 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     }, 22);
   }, [clearMockTimers]);
 
-  const confirmDetection = useCallback(() => {
+  const followUpChat = useCallback((text: string) => {
     if (wsRef.current) {
-      wsRef.current.send({ action: "ACTION_CONFIRM" });
+      wsRef.current.send({ action: "ACTION_FOLLOW_UP", payload: { text } });
+      llmInsightRef.current = ""; setLlmInsight("");
     }
+  }, []);
+
+  const confirmDetection = useCallback(() => {
+    if (!wsRef.current) return; // no-op if session is gone (e.g. already EOS)
+    wsRef.current.send({ action: "ACTION_CONFIRM" });
+    setDetections(prev => prev.map((d, i) => i === 0 ? { ...d, status: "confirmed" } : d));
     setPipelineState("PLAYING");
     setCurrentDetection(null);
-    setLlmInsight("");
+    llmInsightRef.current = ""; setLlmInsight("");
   }, []);
 
   const resumePlayback = useCallback(() => {
@@ -279,18 +354,27 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     setDetections((prev) => [d, ...prev]);
   }, []);
 
-  const resetAnalysis = useCallback(() => {
+  const removeDetection = useCallback((timestamp: number) => {
+    setDetections((prev) => prev.filter((d) => d.timestamp !== timestamp));
+  }, []);
+
+  const resetPipeline = useCallback(() => {
     clearMockTimers();
     wsRef.current?.disconnect();
     wsRef.current = null;
+    explainInFlightRef.current = false;
     setPipelineState("IDLE");
     setIsConnected(false);
-    setVideoId(null);
     setCurrentDetection(null);
     setIsListeningVoice(false);
-    setLlmInsight("");
+    llmInsightRef.current = ""; setLlmInsight("");
     setDetections([]);
   }, [clearMockTimers]);
+
+  const resetAnalysis = useCallback(() => {
+    resetPipeline();
+    setVideoId(null);
+  }, [resetPipeline]);
 
   useEffect(() => {
     return () => {
@@ -309,22 +393,29 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       isListeningVoice,
       llmInsight,
       detections,
+      uploadOnly,
       uploadAndConnect,
       connectLive,
+      prepareFromLibrary,
+      selectFromLibrary,
       startMockAnalysis,
+      resetPipeline,
       ignoreDetection,
       explainMore,
+      followUpChat,
       confirmDetection,
       resumePlayback,
       setIsPlaying,
       addDetection,
+      removeDetection,
       resetAnalysis,
     }),
     [
       isConnected, pipelineState, videoId, isPlaying,
       currentDetection, isListeningVoice, llmInsight, detections,
-      uploadAndConnect, connectLive, startMockAnalysis, ignoreDetection,
-      explainMore, confirmDetection, resumePlayback, setIsPlaying, addDetection, resetAnalysis,
+      uploadOnly, uploadAndConnect, connectLive, prepareFromLibrary, selectFromLibrary,
+      startMockAnalysis, resetPipeline, ignoreDetection,
+      explainMore, followUpChat, confirmDetection, resumePlayback, setIsPlaying, addDetection, removeDetection, resetAnalysis,
     ],
   );
 

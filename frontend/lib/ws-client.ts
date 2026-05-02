@@ -31,7 +31,26 @@ export type ServerEvent =
 export type ClientAction =
   | { action: "ACTION_IGNORE" }
   | { action: "ACTION_EXPLAIN" }
-  | { action: "ACTION_RESUME" };
+  | { action: "ACTION_RESUME" }
+  | { action: "ACTION_CONFIRM" }
+  | { action: "ACTION_FOLLOW_UP"; payload: { text: string } };
+
+// ── Video library types ───────────────────────────────────────────────────────
+
+export interface LibraryVideo {
+  library_id: string;
+  filename: string;
+  size_bytes: number;
+  uploaded_at: string;
+}
+
+export interface LibraryUploadResult {
+  library_id: string;
+  filename: string;
+  size_bytes: number;
+  uploaded_at: string;
+  duplicate: boolean;
+}
 
 // ── Upload / connect helpers ──────────────────────────────────────────────────
 
@@ -59,8 +78,6 @@ export function uploadVideo(
 ): Promise<{ video_id: string }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const form = new FormData();
-    form.append("file", file);
 
     if (onProgress) {
       xhr.upload.onprogress = (e) => {
@@ -84,9 +101,62 @@ export function uploadVideo(
 
     xhr.onerror = () => reject(new Error("Upload network error"));
 
-    xhr.open("POST", `${API_BASE}/upload`);
-    xhr.send(form);
+    // Send raw binary — avoids python-multipart size limits
+    const params = new URLSearchParams({ filename: file.name });
+    xhr.open("POST", `${API_BASE}/upload?${params}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.send(file);
   });
+}
+
+// ── Video library API helpers ─────────────────────────────────────────────────
+
+export async function listLibraryVideos(): Promise<LibraryVideo[]> {
+  const res = await fetch(`${API_BASE}/library`);
+  if (!res.ok) throw new Error(`Library fetch failed: ${res.statusText}`);
+  const data = await res.json() as { videos: LibraryVideo[] };
+  return data.videos;
+}
+
+export function uploadToLibrary(
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<LibraryUploadResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch { reject(new Error("Invalid JSON response")); }
+      } else {
+        reject(Object.assign(new Error(`Upload failed: ${xhr.statusText}`), { status: xhr.status }));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Upload network error"));
+    const params = new URLSearchParams({ filename: file.name });
+    xhr.open("POST", `${API_BASE}/library/upload?${params}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.send(file);
+  });
+}
+
+export async function selectLibraryVideo(libraryId: string): Promise<{ video_id: string }> {
+  const res = await fetch(`${API_BASE}/sessions/from-library/${libraryId}`, { method: "POST" });
+  if (!res.ok) throw new Error(`Session create failed: ${res.statusText}`);
+  return res.json() as Promise<{ video_id: string }>;
+}
+
+export async function deleteLibraryVideo(libraryId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/library/${libraryId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = Object.assign(new Error(`Delete failed: ${res.statusText}`), { status: res.status });
+    throw err;
+  }
 }
 
 // ── EndoscopyWsClient ─────────────────────────────────────────────────────────
@@ -113,7 +183,7 @@ export class EndoscopyWsClient {
     };
 
     this.ws.onclose = () => this.onClose();
-    this.ws.onerror = (e) => console.error("[WS] error", e);
+    this.ws.onerror = (e) => console.warn("[WS] connection error", (e as ErrorEvent).message ?? "no detail");
   }
 
   send(action: ClientAction): void {

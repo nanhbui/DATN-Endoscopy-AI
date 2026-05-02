@@ -12,6 +12,7 @@ import {
   ScanSearch,
   UploadCloud,
 } from 'lucide-react';
+import { PipelineGraphSection } from '@/components/pipeline-graph-section';
 
 import { useAnalysis } from '@/context/AnalysisContext';
 
@@ -267,6 +268,9 @@ export default function Home() {
             )}
           </Box>
         </Box>
+
+        {/* ── GStreamer Pipeline Graph ── */}
+        <PipelineGraphSection />
 
       </Container>
     </Box>

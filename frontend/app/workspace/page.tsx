@@ -5,19 +5,34 @@ import { motion as framMotion } from 'framer-motion';
 import {
   AlertTriangle,
   Bot,
+  CheckCircle2,
   CircleX,
+  ClipboardList,
+  Clock,
   FileVideo,
+  MapPin,
   Mic,
   MicOff,
   Play,
+  RefreshCw,
+  ScanSearch,
+  Sparkles,
   Square,
   UploadCloud,
+  X,
   Zap,
 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import MuiDialog from '@mui/material/Dialog';
+import MuiDialogContent from '@mui/material/DialogContent';
+import Chip from '@mui/material/Chip';
+import Divider from '@mui/material/Divider';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { API_BASE } from '@/lib/ws-client';
-import { useAnalysis } from '@/context/AnalysisContext';
+import { useAnalysis, type Detection, type DetectionStatus } from '@/context/AnalysisContext';
 import { useVoiceControl } from '@/hooks/use-voice-control';
+import { VideoSourceModal } from '@/components/video-source-modal';
 
 import TextField from '@mui/material/TextField';
 import ToggleButton from '@mui/material/ToggleButton';
@@ -29,7 +44,6 @@ import Grid from '@mui/material/Grid';
 import Typography from '@mui/material/Typography';
 import MuiButton from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
-import LinearProgress from '@mui/material/LinearProgress';
 import { styled } from '@mui/material/styles';
 
 const MotionBox = framMotion(Box);
@@ -134,54 +148,18 @@ function LiveInputZone({ value, onChange, onConnect, isConnecting }: LiveInputZo
   );
 }
 
-// ── Upload zone ─────────────────────────────────────────────────────────────
+// ── Video picker trigger zone (opens modal) ──────────────────────────────────
 
-interface UploadZoneProps {
-  onFileSelected: (file: File) => void;
-}
-
-function UploadZone({ onFileSelected }: UploadZoneProps) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
-
-  const handleFiles = useCallback(
-    (files: FileList | null) => {
-      if (!files || files.length === 0) return;
-      const file = files[0];
-      if (!file.type.startsWith('video/')) return;
-      onFileSelected(file);
-    },
-    [onFileSelected],
-  );
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  }, []);
-
-  const handleDragLeave = useCallback(() => setIsDragging(false), []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragging(false);
-      handleFiles(e.dataTransfer.files);
-    },
-    [handleFiles],
-  );
-
+function VideoPickerTriggerZone({ onClick }: { onClick: () => void }) {
   return (
     <Box
-      onClick={() => inputRef.current?.click()}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onClick={onClick}
       sx={{
         aspectRatio: '16 / 9',
         width: '100%',
         borderRadius: '16px',
-        border: `2px dashed ${isDragging ? '#006064' : '#C8D8D6'}`,
-        backgroundColor: isDragging ? 'rgba(0,96,100,0.05)' : '#FAFCFB',
+        border: '2px dashed #C8D8D6',
+        backgroundColor: '#FAFCFB',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -189,85 +167,40 @@ function UploadZone({ onFileSelected }: UploadZoneProps) {
         gap: 2,
         cursor: 'pointer',
         transition: 'all 0.2s ease',
-        '&:hover': {
-          borderColor: '#006064',
-          backgroundColor: 'rgba(0,96,100,0.04)',
-        },
+        '&:hover': { borderColor: '#006064', backgroundColor: 'rgba(0,96,100,0.04)' },
       }}
     >
-      <input
-        ref={inputRef}
-        type="file"
-        accept="video/*"
-        style={{ display: 'none' }}
-        onChange={(e) => handleFiles(e.target.files)}
-      />
-      <Box
-        sx={{
-          width: 64,
-          height: 64,
-          borderRadius: '16px',
-          backgroundColor: isDragging ? 'rgba(0,96,100,0.12)' : 'rgba(0,96,100,0.08)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#006064',
-          transition: 'background-color 0.2s',
-        }}
-      >
+      <Box sx={{ width: 64, height: 64, borderRadius: '16px', backgroundColor: 'rgba(0,96,100,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#006064' }}>
         <UploadCloud size={30} />
       </Box>
       <Box sx={{ textAlign: 'center' }}>
         <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', mb: 0.5 }}>
-          {isDragging ? 'Thả file vào đây' : 'Tải video lên để phân tích'}
+          Tải video lên để phân tích
         </Typography>
         <Typography variant="caption" color="textSecondary">
-          Kéo thả hoặc nhấp để chọn · MP4, MOV, AVI, MKV
+          Nhấn để chọn file hoặc chọn từ thư viện
         </Typography>
       </Box>
     </Box>
   );
 }
 
-// ── Uploading progress state ─────────────────────────────────────────────────
+// ── Library video ready panel ────────────────────────────────────────────────
 
-function UploadingProgress({ fileName, progress }: { fileName: string; progress: number }) {
+function LibraryReadyPanel({ onReselect }: { onReselect: () => void }) {
   return (
     <Box
-      sx={{
-        aspectRatio: '16 / 9',
-        width: '100%',
-        borderRadius: '16px',
-        backgroundColor: '#0D1117',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 3,
-        px: 6,
-      }}
+      onClick={onReselect}
+      sx={{ aspectRatio: '16 / 9', width: '100%', borderRadius: '16px', backgroundColor: '#0D1117', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, position: 'relative', overflow: 'hidden', cursor: 'pointer', transition: 'opacity 0.2s', '&:hover': { opacity: 0.85 } }}
     >
-      <CircularProgress
-        size={52}
-        thickness={3}
-        sx={{ color: '#00838F' }}
-      />
-      <Box sx={{ width: '100%', maxWidth: 320, textAlign: 'center' }}>
-        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.6)', mb: 1.5, display: 'block' }}>
-          Đang tải · {fileName}
+      <Box sx={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(circle, rgba(0,96,100,0.08) 1px, transparent 1px)', backgroundSize: '28px 28px', pointerEvents: 'none' }} />
+      <FileVideo size={36} color="rgba(0,132,143,0.5)" />
+      <Box sx={{ textAlign: 'center', zIndex: 1 }}>
+        <Typography sx={{ fontSize: '0.85rem', fontWeight: 600, color: 'rgba(255,255,255,0.65)', mb: 0.5 }}>
+          Video thư viện đã sẵn sàng
         </Typography>
-        <LinearProgress
-          variant="determinate"
-          value={progress}
-          sx={{
-            height: 4,
-            borderRadius: 2,
-            backgroundColor: 'rgba(255,255,255,0.1)',
-            '& .MuiLinearProgress-bar': { backgroundColor: '#00838F', borderRadius: 2 },
-          }}
-        />
-        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.4)', mt: 1, display: 'block' }}>
-          {progress}%
+        <Typography sx={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.35)' }}>
+          Nhấn &quot;Bắt đầu phân tích AI&quot; · Nhấn vào đây để chọn video khác
         </Typography>
       </Box>
     </Box>
@@ -299,38 +232,312 @@ function LiveStreamPanel({ source, pipelineState }: { source: string; pipelineSt
   );
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtTimestamp(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+const STATUS_CONFIG: Record<DetectionStatus, { label: string; color: string; bg: string; icon: React.ReactNode }> = {
+  confirmed: { label: 'Xác nhận', color: '#059669', bg: 'rgba(5,150,105,0.1)', icon: <CheckCircle2 size={12} /> },
+  analyzed:  { label: 'Đã phân tích', color: '#0277BD', bg: 'rgba(2,119,189,0.1)', icon: <Sparkles size={12} /> },
+  ignored:   { label: 'Bỏ qua', color: '#9AA5B1', bg: 'rgba(154,165,177,0.1)', icon: <CircleX size={12} /> },
+  detected:  { label: 'Phát hiện', color: '#D97706', bg: 'rgba(245,158,11,0.1)', icon: <AlertTriangle size={12} /> },
+};
+
+// ── Session Report Modal ──────────────────────────────────────────────────────
+
+interface SessionReportModalProps {
+  detections: Detection[];
+  onClose: () => void;
+  onRestart: () => void;
+  onGoReport: () => void;
+  isNavigating: boolean;
+}
+
+function SessionReportModal({ detections, onClose, onRestart, onGoReport, isNavigating }: SessionReportModalProps) {
+  const [activeIdx, setActiveIdx] = useState(0);
+  const det = detections[activeIdx] ?? null;
+
+  const confirmed = detections.filter(d => d.status === 'confirmed' || d.status === 'analyzed').length;
+  const ignored   = detections.filter(d => d.status === 'ignored').length;
+
+  return (
+    <MuiDialog
+      open
+      onClose={onClose}
+      maxWidth={false}
+      fullWidth
+      slotProps={{ paper: { sx: { borderRadius: '20px', overflow: 'hidden', width: '92vw', maxWidth: 1140, maxHeight: '88vh' } } }}
+    >
+      <MuiDialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column', height: '88vh', maxHeight: 760 }}>
+
+        {/* ── Header ── */}
+        <Box sx={{ px: 3, py: 2, borderBottom: '1px solid #EEF2F0', display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+          <Box sx={{ width: 38, height: 38, borderRadius: '10px', backgroundColor: 'rgba(46,125,50,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <CheckCircle2 size={20} color="#2E7D32" />
+          </Box>
+          <Box sx={{ flex: 1 }}>
+            <Typography sx={{ fontSize: '1.05rem', fontWeight: 800, color: 'text.primary', lineHeight: 1.2 }}>
+              Phiên phân tích hoàn tất
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.3 }}>
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                {detections.length} tổn thương
+              </Typography>
+              <Box sx={{ width: 3, height: 3, borderRadius: '50%', backgroundColor: 'text.disabled' }} />
+              <Typography variant="caption" sx={{ color: '#059669', fontWeight: 600 }}>{confirmed} xác nhận</Typography>
+              <Box sx={{ width: 3, height: 3, borderRadius: '50%', backgroundColor: 'text.disabled' }} />
+              <Typography variant="caption" sx={{ color: '#9AA5B1' }}>{ignored} bỏ qua</Typography>
+            </Box>
+          </Box>
+          <Box component="button" onClick={onClose} sx={{ background: 'none', border: 'none', cursor: 'pointer', p: 0.75, borderRadius: '8px', '&:hover': { backgroundColor: '#F0F4F3' } }}>
+            <X size={18} color="#9AA5B1" />
+          </Box>
+        </Box>
+
+        {/* ── Body: left list + right detail ── */}
+        <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+
+          {/* Left: detection list */}
+          <Box sx={{ width: 260, flexShrink: 0, borderRight: '1px solid #EEF2F0', overflowY: 'auto', backgroundColor: '#FAFCFB' }}>
+            {detections.length === 0 ? (
+              <Box sx={{ p: 3, textAlign: 'center', color: 'text.disabled', pt: 6 }}>
+                <ScanSearch size={28} style={{ marginBottom: 8, opacity: 0.4 }} />
+                <Typography variant="caption" sx={{ display: 'block' }}>Không có tổn thương</Typography>
+              </Box>
+            ) : detections.map((d, i) => {
+              const sc = STATUS_CONFIG[d.status ?? 'detected'];
+              const isActive = i === activeIdx;
+              return (
+                <Box
+                  key={`${d.timestamp}-${i}`}
+                  onClick={() => setActiveIdx(i)}
+                  sx={{
+                    display: 'flex', gap: 1.5, px: 1.5, py: 1.25,
+                    borderBottom: '1px solid #EEF2F0',
+                    cursor: 'pointer',
+                    backgroundColor: isActive ? 'rgba(0,96,100,0.06)' : 'transparent',
+                    borderLeft: isActive ? '3px solid #006064' : '3px solid transparent',
+                    transition: 'all 0.12s',
+                    '&:hover': { backgroundColor: isActive ? 'rgba(0,96,100,0.06)' : 'rgba(0,0,0,0.03)' },
+                  }}
+                >
+                  {/* Thumbnail */}
+                  <Box sx={{ width: 52, height: 40, borderRadius: '7px', overflow: 'hidden', flexShrink: 0, backgroundColor: '#0D1117', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {d.frame_b64
+                      ? <img src={`data:image/jpeg;base64,${d.frame_b64}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      : <ScanSearch size={14} color="rgba(255,255,255,0.2)" />}
+                  </Box>
+                  {/* Info */}
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography sx={{ fontSize: '0.8rem', fontWeight: 700, color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {d.label}
+                    </Typography>
+                    <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', fontFamily: 'monospace' }}>
+                      {fmtTimestamp(d.timestamp)}
+                    </Typography>
+                    {/* Status badge */}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4, mt: 0.4 }}>
+                      <Box sx={{ color: sc.color }}>{sc.icon}</Box>
+                      <Typography sx={{ fontSize: '0.66rem', fontWeight: 600, color: sc.color }}>{sc.label}</Typography>
+                    </Box>
+                  </Box>
+                </Box>
+              );
+            })}
+          </Box>
+
+          {/* Right: detection detail */}
+          {det ? (
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: { xs: 'column', md: 'row' }, overflow: 'hidden' }}>
+
+              {/* Frame */}
+              <Box sx={{ flex: '0 0 48%', backgroundColor: '#0A0F16', position: 'relative', minHeight: { xs: 200, md: 'auto' } }}>
+                {det.frame_b64 ? (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`data:image/jpeg;base64,${det.frame_b64}`} alt="frame" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+                    <Box sx={{ position: 'absolute', left: `${det.bbox.x}%`, top: `${det.bbox.y}%`, width: `${det.bbox.width}%`, height: `${det.bbox.height}%`, border: '2px solid #F59E0B', borderRadius: '4px', boxShadow: '0 0 0 1px rgba(0,0,0,0.6)', pointerEvents: 'none' }} />
+                    <Box sx={{ position: 'absolute', left: `${det.bbox.x}%`, top: `calc(${det.bbox.y}% - 26px)`, display: 'flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.3, borderRadius: '5px', backgroundColor: 'rgba(0,0,0,0.7)', border: '1px solid rgba(245,158,11,0.4)', pointerEvents: 'none' }}>
+                      <Zap size={9} color="#F59E0B" />
+                      <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#FCD34D', whiteSpace: 'nowrap' }}>{det.label}</Typography>
+                    </Box>
+                  </>
+                ) : (
+                  <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5, background: 'radial-gradient(ellipse at 50% 40%, rgba(0,96,100,0.1) 0%, transparent 70%)' }}>
+                    <Box sx={{ width: 60, height: 60, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <ScanSearch size={26} color="rgba(255,255,255,0.18)" />
+                    </Box>
+                    <Typography sx={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.25)' }}>Không có khung hình</Typography>
+                  </Box>
+                )}
+                {/* Status overlay */}
+                {(() => { const sc = STATUS_CONFIG[det.status ?? 'detected']; return (
+                  <Box sx={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', alignItems: 'center', gap: 0.6, px: 1.25, py: 0.5, borderRadius: '7px', backgroundColor: sc.bg, border: `1px solid ${sc.color}30`, backdropFilter: 'blur(8px)' }}>
+                    <Box sx={{ color: sc.color }}>{sc.icon}</Box>
+                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 700, color: sc.color }}>{sc.label}</Typography>
+                  </Box>
+                ); })()}
+              </Box>
+
+              {/* Detail panel */}
+              <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', p: 3, gap: 2 }}>
+                <Box>
+                  <Typography sx={{ fontSize: '0.68rem', fontWeight: 700, color: '#006064', textTransform: 'uppercase', letterSpacing: '0.07em', mb: 0.5 }}>Kết quả phát hiện</Typography>
+                  <Typography sx={{ fontSize: '1.2rem', fontWeight: 800, color: 'text.primary', lineHeight: 1.3 }}>{det.label}</Typography>
+                </Box>
+
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  <Chip icon={<MapPin size={11} />} label={det.anatomicalLocation} size="small" sx={{ backgroundColor: 'rgba(0,96,100,0.08)', color: '#006064', fontWeight: 600, fontSize: '0.76rem', borderRadius: '7px', height: 26, '& .MuiChip-icon': { color: '#006064' } }} />
+                  <Chip icon={<Clock size={11} />} label={fmtTimestamp(det.timestamp)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.04)', color: 'text.secondary', fontSize: '0.76rem', fontFamily: 'monospace', borderRadius: '7px', height: 26, '& .MuiChip-icon': { color: 'text.disabled' } }} />
+                  <Chip label={`${(det.confidence * 100).toFixed(0)}% tin cậy`} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.04)', color: 'text.secondary', fontWeight: 600, fontSize: '0.76rem', borderRadius: '7px', height: 26 }} />
+                </Box>
+
+                <Divider />
+
+                {det.llmInsight ? (
+                  <Box>
+                    <Typography sx={{ fontSize: '0.68rem', fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.07em', mb: 1.25 }}>Phân tích AI</Typography>
+                    <Box sx={{
+                      fontSize: '0.86rem', lineHeight: 1.75, color: 'text.primary',
+                      '& p': { margin: '0 0 8px' }, '& p:last-child': { marginBottom: 0 },
+                      '& strong': { fontWeight: 700, color: '#004D40' },
+                      '& ul, & ol': { pl: '1rem', margin: '3px 0 8px' },
+                      '& li': { mb: '3px', listStyleType: 'none', pl: 0 },
+                      '& li input[type="checkbox"]': { mr: '6px', accentColor: '#006064', width: 12, height: 12, verticalAlign: 'middle' },
+                      '& h1,& h2,& h3': { fontSize: '0.86rem', fontWeight: 700, color: '#004D40', margin: '7px 0 3px' },
+                      '& code': { backgroundColor: 'rgba(0,96,100,0.08)', borderRadius: '4px', px: '4px', fontSize: '0.78rem' },
+                    }}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{det.llmInsight}</ReactMarkdown>
+                    </Box>
+                  </Box>
+                ) : (
+                  <Box sx={{ py: 2, color: 'text.disabled', display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Bot size={16} />
+                    <Typography sx={{ fontSize: '0.82rem' }}>
+                      {det.status === 'ignored' ? 'Tổn thương đã bỏ qua — không có phân tích LLM.' : 'Chưa có phân tích LLM.'}
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+            </Box>
+          ) : (
+            <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.disabled' }}>
+              <Typography variant="caption">Chọn một tổn thương để xem chi tiết</Typography>
+            </Box>
+          )}
+        </Box>
+
+        {/* ── Footer ── */}
+        <Box sx={{ px: 3, py: 2, borderTop: '1px solid #EEF2F0', display: 'flex', gap: 1.5, flexShrink: 0, justifyContent: 'flex-end' }}>
+          <MuiButton variant="outlined" startIcon={<RefreshCw size={15} />} onClick={onRestart} sx={{ borderRadius: '10px', fontWeight: 700 }}>
+            Phân tích lại
+          </MuiButton>
+          <MuiButton
+            variant="contained"
+            disabled={isNavigating}
+            startIcon={isNavigating ? <CircularProgress size={14} sx={{ color: 'inherit' }} /> : <ClipboardList size={16} />}
+            onClick={onGoReport}
+            sx={{ borderRadius: '10px', fontWeight: 700, backgroundColor: '#006064', '&:hover': { backgroundColor: '#004D51' } }}
+          >
+            {isNavigating ? 'Đang tạo...' : 'Tạo báo cáo đầy đủ'}
+          </MuiButton>
+        </Box>
+      </MuiDialogContent>
+    </MuiDialog>
+  );
+}
+
+// ── Detection action bar (shared across video / live / library views) ────────
+
+interface DetectionBarProps {
+  detection: Detection;
+  llmInsight: string;
+  voiceSupported: boolean;
+  isVoiceListening: boolean;
+  onExplain: () => void;
+  onIgnore: () => void;
+  onConfirm: () => void;
+}
+
+function DetectionBar({ detection, llmInsight, voiceSupported, isVoiceListening, onExplain, onIgnore, onConfirm }: DetectionBarProps) {
+  return (
+    <Box sx={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 4, px: 2, py: 1.25, backdropFilter: 'blur(14px)', backgroundColor: 'rgba(13,17,23,0.82)', borderTop: '1px solid rgba(245,158,11,0.25)', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
+        <AlertTriangle size={14} color="#F59E0B" />
+        <Typography sx={{ fontSize: '0.78rem', fontWeight: 700, color: '#FCD34D', whiteSpace: 'nowrap' }}>{detection.label}</Typography>
+        <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)' }}>{(detection.confidence * 100).toFixed(0)}%</Typography>
+        <Typography sx={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.38)', fontFamily: 'monospace', ml: 0.25 }}>
+          @ {fmtTimestamp(detection.timestamp)}
+        </Typography>
+      </Box>
+      {voiceSupported && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: isVoiceListening ? '#4FC3F7' : 'rgba(255,255,255,0.35)' }}>
+          {isVoiceListening ? <Mic size={14} /> : <MicOff size={14} />}
+          {isVoiceListening && <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', maxWidth: 140 }}>đang nghe…</Typography>}
+        </Box>
+      )}
+      {llmInsight ? (
+        <>
+          <MuiButton size="small" variant="contained" onClick={onConfirm} sx={{ borderRadius: '7px', backgroundColor: 'rgba(34,197,94,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#16A34A' } }}>Xác nhận</MuiButton>
+          <MuiButton size="small" variant="outlined" onClick={onIgnore} sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#EF4444', color: '#FCA5A5' } }}>Bỏ qua</MuiButton>
+        </>
+      ) : (
+        <>
+          <MuiButton size="small" variant="outlined" onClick={onExplain} sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#0277BD', color: '#4FC3F7' } }}>Giải thích</MuiButton>
+          <MuiButton size="small" variant="contained" onClick={onIgnore} sx={{ borderRadius: '7px', backgroundColor: 'rgba(245,158,11,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#F59E0B' } }}>Bỏ qua</MuiButton>
+        </>
+      )}
+    </Box>
+  );
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
 export default function Workspace() {
+  const router = useRouter();
+
   const {
     isPlaying,
     isConnected,
     pipelineState,
+    videoId,
     currentDetection,
     isListeningVoice,
     llmInsight,
+    detections,
     startMockAnalysis,
+    resetPipeline,
     ignoreDetection,
     explainMore,
+    followUpChat,
     confirmDetection,
-    uploadAndConnect,
+    uploadOnly,
+    prepareFromLibrary,
     connectLive,
+    selectFromLibrary,
     resetAnalysis,
   } = useAnalysis();
 
   // Source mode
-  const [sourceMode, setSourceMode] = useState<'file' | 'live'>('file');
+  const [sourceMode, setSourceMode] = useState<'video' | 'live'>('video');
+  const [isSourceModalOpen, setIsSourceModalOpen] = useState(false);
   const [liveSource, setLiveSource] = useState('');
   const [isLiveConnecting, setIsLiveConnecting] = useState(false);
 
   // Local video state (object URL for <video> preview)
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
+  const [videoUnsupported, setVideoUnsupported] = useState(false);
+  // True when a library video is prepared (video_id set) but analysis not yet started
+  const [libraryReady, setLibraryReady] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [transcriptLog, setTranscriptLog] = useState<{ text: string; ts: number }[]>([]);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const [isNavigating, setIsNavigating] = useState(false);
   const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
   const prevBackendReachable = useRef<boolean | null>(null);
   const [backendJustCameBack, setBackendJustCameBack] = useState(false);
@@ -358,26 +565,48 @@ export default function Workspace() {
     return () => clearInterval(id);
   }, [isConnected]);
 
-  // Seek video to detection frame so bbox aligns with what's on screen
+  // On mount: if context still holds a stale PLAYING/PAUSED state from a previous
+  // navigation but there's no actual video source here, reset to IDLE.
   useEffect(() => {
-    if (currentDetection && videoRef.current) {
-      videoRef.current.currentTime = currentDetection.timestamp;
+    if (pipelineState !== 'IDLE' && pipelineState !== 'EOS_SUMMARY' && !isConnected) {
+      resetPipeline();
     }
-  }, [currentDetection]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally run once on mount only
 
-  // Auto-pause / resume local video preview in sync with pipeline state
+  // When videoId is cleared (e.g. "Session not found" error), reset library state
+  // so the picker shows instead of a broken panel with no session.
+  useEffect(() => {
+    if (!videoId) {
+      if (libraryReady) setLibraryReady(false);
+      // Clear backend stream URLs (not blob: object URLs managed separately)
+      if (videoUrl && !videoUrl.startsWith('blob:')) {
+        setVideoUrl(null);
+        setVideoFile(null);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId]);
+
+  // Video plays independently — backend processes faster than realtime (sync=false).
+  // Pause/resume the local video preview in sync with pipeline state.
+  // When a detection is found, seek the video to the detection timestamp so the
+  // doctor sees the exact frame the AI flagged (backend runs async and may be
+  // ahead or behind real-time, so we can't rely on the browser's current position).
   useEffect(() => {
     if (!videoRef.current || !videoUrl) return;
-    if (pipelineState === 'PAUSED_WAITING_INPUT' || pipelineState === 'PROCESSING_LLM') {
+    if (pipelineState === 'PAUSED_WAITING_INPUT' || pipelineState === 'PROCESSING_LLM' || pipelineState === 'EOS_SUMMARY') {
       videoRef.current.pause();
     } else if (pipelineState === 'PLAYING') {
       videoRef.current.play().catch(() => {});
     }
   }, [pipelineState, videoUrl]);
 
-  // Ref so onIntent callback always reads current state without stale closure
+  // Refs so onIntent callback always reads current state without stale closure
   const pipelineStateRef = useRef(pipelineState);
   pipelineStateRef.current = pipelineState;
+  const llmInsightRef = useRef(llmInsight);
+  llmInsightRef.current = llmInsight;
 
   const { isListening: isVoiceListening, audioLevel, supported: voiceSupported, micError, startListening, stopListening } =
     useVoiceControl({
@@ -395,7 +624,8 @@ export default function Workspace() {
         if (intent === 'BO_QUA') ignoreDetection();
         else if (intent === 'GIAI_THICH') explainMore();
         else if (intent === 'XAC_NHAN') confirmDetection();
-      }, [ignoreDetection, explainMore, confirmDetection]),
+        else if (intent === 'UNKNOWN' && llmInsightRef.current) followUpChat(transcript);
+      }, [ignoreDetection, explainMore, confirmDetection, followUpChat]),
     });
 
   // Auto-activate mic when pipeline pauses on a detection (hands-free workflow)
@@ -405,29 +635,16 @@ export default function Workspace() {
     }
   }, [pipelineState, voiceSupported, isVoiceListening, startListening]);
 
-  /** Upload to backend + connect WebSocket, keep local preview URL. */
-  const handleFileSelected = useCallback(async (file: File) => {
-    setVideoFile(file);
-    setIsUploading(true);
-    setUploadProgress(0);
-
-    // Local preview immediately — no waiting for server
+  /** Upload only — modal stays open with progress bar; background keeps VideoPickerTriggerZone.
+   *  Video is shown in the player only after upload finishes and modal closes. */
+  const handleUploadAndConnect = useCallback(async (file: File, onProgress: (pct: number) => void) => {
+    await uploadOnly(file, onProgress);
     const localUrl = URL.createObjectURL(file);
+    setVideoFile(file);
     setVideoUrl(localUrl);
-
-    try {
-      await uploadAndConnect(file, setUploadProgress);
-      // Pipeline is now running on the server — play the local preview too
-      videoRef.current?.play().catch(() => {/* autoplay blocked — user can click play manually */});
-      // Start voice immediately so mic is active before first detection
-      if (voiceSupported) startListening();
-    } catch (err) {
-      console.warn("[workspace] backend offline, using mock pipeline:", err);
-    } finally {
-      setIsUploading(false);
-      setUploadProgress(0);
-    }
-  }, [uploadAndConnect, voiceSupported, startListening]);
+    setVideoUnsupported(false);
+    setLibraryReady(false);
+  }, [uploadOnly]);
 
   const handleLiveConnect = useCallback(async () => {
     if (!liveSource.trim()) return;
@@ -444,22 +661,39 @@ export default function Workspace() {
 
   const handleStop = useCallback(() => {
     stopListening();
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.currentTime = 0;
-    }
+    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
     setTranscriptLog([]);
+    setLibraryReady(false);
     resetAnalysis();
   }, [stopListening, resetAnalysis]);
 
-  const handleRemoveVideo = useCallback(() => {
-    if (videoRef.current) {
-      videoRef.current.pause();
+  const handleLibrarySelectFromModal = useCallback(async (libraryId: string, localFile?: File) => {
+    try {
+      const vid = await prepareFromLibrary(libraryId);
+      if (localFile) {
+        const localUrl = URL.createObjectURL(localFile);
+        setVideoFile(localFile);
+        setVideoUrl(localUrl);
+        setVideoUnsupported(false);
+        setLibraryReady(false);
+      } else {
+        // Stream library video from backend so browser can play it like an uploaded file
+        setVideoUrl(`${API_BASE}/session/${vid}/video`);
+        setVideoFile(null);
+        setVideoUnsupported(false);
+        setLibraryReady(true);  // keeps "Video từ thư viện" label in header
+      }
+    } catch (err) {
+      console.warn('[workspace] library prepare failed:', err);
     }
+  }, [prepareFromLibrary]);
+
+  const handleRemoveVideo = useCallback(() => {
+    if (videoRef.current) videoRef.current.pause();
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoFile(null);
     setVideoUrl(null);
-    setIsUploading(false);
+    setLibraryReady(false);
     setTranscriptLog([]);
     resetAnalysis();
   }, [videoUrl, resetAnalysis]);
@@ -467,8 +701,8 @@ export default function Workspace() {
   // ── Status badge config ────────────────────────────────────────────────────
 
   const statusConfig =
-    pipelineState === 'PLAYING'
-      ? { text: isConnected ? 'Đang phân tích (Live)' : 'Đang phân tích', color: '#4CAF50', bg: 'rgba(46,125,50,0.1)', textColor: '#2E7D32' }
+    pipelineState === 'PLAYING' && (videoUrl || libraryReady || isConnected)
+      ? { text: (isConnected && sourceMode === 'live') ? 'Đang phân tích (Live)' : 'Đang phân tích', color: '#4CAF50', bg: 'rgba(46,125,50,0.1)', textColor: '#2E7D32' }
       : pipelineState === 'PAUSED_WAITING_INPUT'
         ? { text: 'AI phát hiện bất thường', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)', textColor: '#D97706' }
         : pipelineState === 'PROCESSING_LLM'
@@ -519,7 +753,7 @@ export default function Workspace() {
                 setTranscriptLog([]);
                 if (videoUrl) URL.revokeObjectURL(videoUrl);
                 setVideoUrl(null);
-                await handleFileSelected(videoFile);
+                if (videoFile) await handleUploadAndConnect(videoFile, () => {});
               }}
               sx={{ borderRadius: '8px', backgroundColor: '#D97706', fontWeight: 700, fontSize: '0.8rem', whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#B45309' } }}
             >
@@ -533,6 +767,30 @@ export default function Workspace() {
               Bỏ qua
             </MuiButton>
           </Box>
+        )}
+
+        {/* ── Session Report Modal (replaces the small EOS dialog) ── */}
+        {pipelineState === 'EOS_SUMMARY' && (
+          <SessionReportModal
+            detections={detections}
+            onClose={() => {
+              stopListening();
+              setTranscriptLog([]);
+              if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
+              resetPipeline();
+            }}
+            onRestart={() => {
+              stopListening();
+              setTranscriptLog([]);
+              if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
+              resetPipeline();
+            }}
+            onGoReport={() => {
+              setIsNavigating(true);
+              router.push('/report');
+            }}
+            isNavigating={isNavigating}
+          />
         )}
 
         <Grid container spacing={3}>
@@ -563,11 +821,11 @@ export default function Workspace() {
                       onChange={(_, v) => { if (v && v !== sourceMode) { resetAnalysis(); setVideoFile(null); setVideoUrl(null); setSourceMode(v); } }}
                       sx={{ '& .MuiToggleButton-root': { py: 0.3, px: 1.25, fontSize: '0.72rem', fontWeight: 600, textTransform: 'none', borderRadius: '6px !important', border: '1px solid #E2EAE8 !important', '&.Mui-selected': { backgroundColor: 'rgba(0,96,100,0.1)', color: '#006064' } } }}
                     >
-                      <ToggleButton value="file"><FileVideo size={12} style={{ marginRight: 4 }} />Tải video</ToggleButton>
+                      <ToggleButton value="video"><FileVideo size={12} style={{ marginRight: 4 }} />Tải video</ToggleButton>
                       <ToggleButton value="live"><Wifi size={12} style={{ marginRight: 4 }} />Trực tiếp</ToggleButton>
                     </ToggleButtonGroup>
                   </Box>
-                  {sourceMode === 'file' ? (
+                  {sourceMode === 'video' ? (
                     videoFile ? (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                         <FileVideo size={12} color="#006064" />
@@ -578,8 +836,15 @@ export default function Workspace() {
                           · {(videoFile.size / 1024 / 1024).toFixed(1)} MB
                         </Typography>
                       </Box>
+                    ) : libraryReady ? (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                        <FileVideo size={12} color="#006064" />
+                        <Typography variant="caption" sx={{ color: '#006064', fontWeight: 600 }}>
+                          Video từ thư viện
+                        </Typography>
+                      </Box>
                     ) : (
-                      <Typography variant="caption" color="textSecondary">Chọn file video để bắt đầu phân tích</Typography>
+                      <Typography variant="caption" color="textSecondary">Nhấn để chọn file hoặc chọn từ thư viện</Typography>
                     )
                   ) : (
                     <Typography variant="caption" color="textSecondary">
@@ -588,7 +853,7 @@ export default function Workspace() {
                   )}
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                  {videoUrl && (
+                  {(videoUrl || libraryReady) && (
                     <MuiButton
                       size="small"
                       onClick={handleRemoveVideo}
@@ -614,29 +879,49 @@ export default function Workspace() {
                 ) : sourceMode === 'live' && isConnected ? (
                   <VideoContainer>
                     <LiveStreamPanel source={liveSource} pipelineState={pipelineState} />
-                    {/* Detection overlays reuse same logic */}
                     {pipelineState === 'PAUSED_WAITING_INPUT' && currentDetection && (
-                      <Box sx={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 4, px: 2, py: 1.25, backdropFilter: 'blur(14px)', backgroundColor: 'rgba(13,17,23,0.82)', borderTop: '1px solid rgba(245,158,11,0.25)', display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
-                          <AlertTriangle size={14} color="#F59E0B" />
-                          <Typography sx={{ fontSize: '0.78rem', fontWeight: 700, color: '#FCD34D', whiteSpace: 'nowrap' }}>{currentDetection.label}</Typography>
-                          <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)' }}>{(currentDetection.confidence * 100).toFixed(0)}%</Typography>
-                        </Box>
-                        {voiceSupported && (
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: isVoiceListening ? '#4FC3F7' : 'rgba(255,255,255,0.35)' }}>
-                            {isVoiceListening ? <Mic size={14} /> : <MicOff size={14} />}
-                            {isVoiceListening && (
-                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', maxWidth: 140 }}>đang nghe…</Typography>
-                            )}
-                          </Box>
-                        )}
-                        <MuiButton size="small" variant="outlined" onClick={explainMore} sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#0277BD', color: '#4FC3F7' } }}>Giải thích</MuiButton>
-                        <MuiButton size="small" variant="contained" onClick={ignoreDetection} sx={{ borderRadius: '7px', backgroundColor: 'rgba(245,158,11,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#F59E0B' } }}>Bỏ qua</MuiButton>
-                      </Box>
+                      <DetectionBar detection={currentDetection} llmInsight={llmInsight} voiceSupported={voiceSupported} isVoiceListening={isVoiceListening} onExplain={explainMore} onIgnore={ignoreDetection} onConfirm={confirmDetection} />
                     )}
                   </VideoContainer>
-                ) : isUploading ? (
-                  <UploadingProgress fileName={videoFile?.name ?? ''} progress={uploadProgress} />
+                ) : libraryReady && !videoUrl && pipelineState === 'IDLE' ? (
+                  /* Library selected but videoUrl not ready yet (fetch in-flight) */
+                  <LibraryReadyPanel onReselect={() => setIsSourceModalOpen(true)} />
+                ) : libraryReady && !videoUrl ? (
+                  /* Library video active but stream URL not yet set — show spinner fallback */
+                  <VideoContainer>
+                    {currentDetection?.frame_b64 ? (
+                      <Box
+                        component="img"
+                        src={`data:image/jpeg;base64,${currentDetection.frame_b64}`}
+                        sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', zIndex: 1 }}
+                      />
+                    ) : (
+                      <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, zIndex: 1 }}>
+                        <CircularProgress size={32} thickness={3} sx={{ color: '#006064' }} />
+                        <Typography sx={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.45)' }}>Đang phân tích video…</Typography>
+                      </Box>
+                    )}
+                    {pipelineState === 'PAUSED_WAITING_INPUT' && currentDetection && (
+                      <DetectionBar detection={currentDetection} llmInsight={llmInsight} voiceSupported={voiceSupported} isVoiceListening={isVoiceListening} onExplain={explainMore} onIgnore={ignoreDetection} onConfirm={confirmDetection} />
+                    )}
+                    {currentDetection && (
+                      <BboxOverlay
+                        initial={{ opacity: 0, scale: 0.94 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.2 }}
+                        sx={{ zIndex: 2, left: `${currentDetection.bbox.x}%`, top: `${currentDetection.bbox.y}%`, width: `${currentDetection.bbox.width}%`, height: `${currentDetection.bbox.height}%` }}
+                      >
+                        <Box sx={{ position: 'absolute', top: -36, left: 0, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5, borderRadius: '8px', backdropFilter: 'blur(12px)', backgroundColor: 'rgba(0,0,0,0.55)', border: '1px solid rgba(245,158,11,0.4)', whiteSpace: 'nowrap' }}>
+                          <Zap size={11} color="#F59E0B" />
+                          <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, color: '#FCD34D' }}>{currentDetection.label}</Typography>
+                          <Box sx={{ width: '1px', height: 12, backgroundColor: 'rgba(255,255,255,0.2)' }} />
+                          <Typography sx={{ fontSize: '0.72rem', fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{(currentDetection.confidence * 100).toFixed(0)}%</Typography>
+                          <Box sx={{ width: '1px', height: 12, backgroundColor: 'rgba(255,255,255,0.2)' }} />
+                          <Typography sx={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.5)', fontFamily: 'monospace' }}>{fmtTimestamp(currentDetection.timestamp)}</Typography>
+                        </Box>
+                      </BboxOverlay>
+                    )}
+                  </VideoContainer>
                 ) : videoUrl ? (
                   /* Real video player with detection overlay */
                   <VideoContainer>
@@ -644,6 +929,8 @@ export default function Workspace() {
                       ref={videoRef}
                       src={videoUrl}
                       controls
+                      onError={() => setVideoUnsupported(true)}
+                      onCanPlay={() => setVideoUnsupported(false)}
                       style={{
                         position: 'absolute',
                         inset: 0,
@@ -651,74 +938,27 @@ export default function Workspace() {
                         height: '100%',
                         objectFit: 'contain',
                         zIndex: 1,
+                        opacity: videoUnsupported ? 0 : 1,
                       }}
                     />
-                    {/* Detection action bar — shown when pipeline is paused */}
-                    {pipelineState === 'PAUSED_WAITING_INPUT' && currentDetection && (
-                      <Box
-                        sx={{
-                          position: 'absolute',
-                          bottom: 0,
-                          left: 0,
-                          right: 0,
-                          zIndex: 4,
-                          px: 2,
-                          py: 1.25,
-                          backdropFilter: 'blur(14px)',
-                          backgroundColor: 'rgba(13,17,23,0.82)',
-                          borderTop: '1px solid rgba(245,158,11,0.25)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 1.5,
-                        }}
-                      >
-                        {/* Detection label */}
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
-                          <AlertTriangle size={14} color="#F59E0B" />
-                          <Typography sx={{ fontSize: '0.78rem', fontWeight: 700, color: '#FCD34D', whiteSpace: 'nowrap' }}>
-                            {currentDetection.label}
-                          </Typography>
-                          <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.55)' }}>
-                            {(currentDetection.confidence * 100).toFixed(0)}%
-                          </Typography>
-                        </Box>
-                        {/* Mic status indicator */}
-                        {voiceSupported && (
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: isVoiceListening ? '#4FC3F7' : 'rgba(255,255,255,0.35)' }}>
-                            {isVoiceListening
-                              ? <Mic size={14} />
-                              : <MicOff size={14} />
-                            }
-                            {isVoiceListening && (
-                              <Typography sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.45)', maxWidth: 140 }}>đang nghe…</Typography>
-                            )}
-                          </Box>
-                        )}
-                        {/* Action buttons — change after LLM explained */}
-                        {llmInsight ? (
-                          <>
-                            <MuiButton size="small" variant="contained" onClick={confirmDetection}
-                              sx={{ borderRadius: '7px', backgroundColor: 'rgba(34,197,94,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#16A34A' } }}>
-                              Xác nhận
-                            </MuiButton>
-                            <MuiButton size="small" variant="outlined" onClick={ignoreDetection}
-                              sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#EF4444', color: '#FCA5A5' } }}>
-                              Bỏ qua
-                            </MuiButton>
-                          </>
-                        ) : (
-                          <>
-                            <MuiButton size="small" variant="outlined" onClick={explainMore}
-                              sx={{ borderRadius: '7px', borderColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { borderColor: '#0277BD', color: '#4FC3F7' } }}>
-                              Giải thích
-                            </MuiButton>
-                            <MuiButton size="small" variant="contained" onClick={ignoreDetection}
-                              sx={{ borderRadius: '7px', backgroundColor: 'rgba(245,158,11,0.85)', color: '#000', fontWeight: 700, fontSize: '0.75rem', py: 0.4, px: 1.25, whiteSpace: 'nowrap', '&:hover': { backgroundColor: '#F59E0B' } }}>
-                              Bỏ qua
-                            </MuiButton>
-                          </>
-                        )}
+                    {videoUnsupported && (
+                      <Box sx={{
+                        position: 'absolute', inset: 0, zIndex: 2,
+                        display: 'flex', flexDirection: 'column',
+                        alignItems: 'center', justifyContent: 'center', gap: 1,
+                        bgcolor: 'rgba(0,0,0,0.85)',
+                      }}>
+                        <Typography sx={{ color: '#FFA726', fontWeight: 700, fontSize: '0.95rem' }}>
+                          Trình duyệt không hỗ trợ xem trước video này
+                        </Typography>
+                        <Typography sx={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.8rem', textAlign: 'center', px: 2 }}>
+                          Codec {videoFile?.name?.endsWith('.mp4') ? 'MPEG-4 Part 2' : ''} không được hỗ trợ trong trình duyệt.
+                          Phân tích AI vẫn chạy bình thường — hãy dùng H.264 để xem trước.
+                        </Typography>
                       </Box>
+                    )}
+                    {pipelineState === 'PAUSED_WAITING_INPUT' && currentDetection && (
+                      <DetectionBar detection={currentDetection} llmInsight={llmInsight} voiceSupported={voiceSupported} isVoiceListening={isVoiceListening} onExplain={explainMore} onIgnore={ignoreDetection} onConfirm={confirmDetection} />
                     )}
 
                     {/* AI bbox overlay on top of video */}
@@ -765,8 +1005,7 @@ export default function Workspace() {
                     )}
                   </VideoContainer>
                 ) : (
-                  /* Upload zone — no video yet */
-                  <UploadZone onFileSelected={handleFileSelected} />
+                  <VideoPickerTriggerZone onClick={() => setIsSourceModalOpen(true)} />
                 )}
               </Box>
             </Box>
@@ -855,26 +1094,16 @@ export default function Workspace() {
                 }}
               >
                 <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', letterSpacing: '0.05em', textTransform: 'uppercase', mb: 2, display: 'block' }}>
-                  {videoUrl ? 'Điều khiển phân tích' : 'Tải video lên'}
+                  {(videoUrl || libraryReady) ? 'Điều khiển phân tích' : 'Tải video lên'}
                 </Typography>
 
-                {!videoUrl ? (
+                {!videoUrl && !libraryReady ? (
                   /* Upload CTA when no video */
                   <MuiButton
                     variant="outlined"
                     fullWidth
                     startIcon={<UploadCloud size={18} />}
-                    onClick={() => {
-                      // trigger the hidden file input inside UploadZone by dispatching a click to the panel
-                      const input = document.createElement('input');
-                      input.type = 'file';
-                      input.accept = 'video/*';
-                      input.onchange = (e) => {
-                        const files = (e.target as HTMLInputElement).files;
-                        if (files?.[0]) handleFileSelected(files[0]);
-                      };
-                      input.click();
-                    }}
+                    onClick={() => setIsSourceModalOpen(true)}
                     sx={{
                       borderRadius: '10px',
                       py: 1.5,
@@ -892,17 +1121,16 @@ export default function Workspace() {
                     <MuiButton
                       variant="contained"
                       fullWidth
-                      disabled={isUploading || isPlaying || pipelineState === 'EOS_SUMMARY'}
+                      disabled={pipelineState !== 'IDLE' || (libraryReady && !videoId)}
                       onClick={() => {
                         startMockAnalysis();
                         videoRef.current?.play().catch(() => {});
-                        console.log("[Workspace] Bắt đầu AI clicked, voiceSupported:", voiceSupported, "isVoiceListening:", isVoiceListening);
                         if (voiceSupported) startListening();
                       }}
                       startIcon={<Play size={17} />}
                       sx={{ borderRadius: '10px', py: 1.25, fontWeight: 700, fontSize: '0.875rem' }}
                     >
-                      {pipelineState === 'EOS_SUMMARY' ? 'Hoàn tất' : isPlaying ? 'Đang phân tích…' : 'Bắt đầu AI'}
+                      {isPlaying ? 'Đang phân tích…' : 'Bắt đầu phân tích AI'}
                     </MuiButton>
                     <MuiButton
                       variant="outlined"
@@ -947,7 +1175,7 @@ export default function Workspace() {
                         AI phát hiện bất thường
                       </Typography>
                       <Typography variant="caption" sx={{ color: '#B45309' }}>
-                        {currentDetection.label} · Độ tin cậy {(currentDetection.confidence * 100).toFixed(0)}%
+                        {currentDetection.label} · {(currentDetection.confidence * 100).toFixed(0)}% · <span style={{ fontFamily: 'monospace' }}>{fmtTimestamp(currentDetection.timestamp)}</span>
                       </Typography>
                     </Box>
                   </Box>
@@ -1026,17 +1254,31 @@ export default function Workspace() {
                   ) : llmInsight ? (
                     <MotionBox initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
                       <Box sx={{
-                        backgroundColor: 'rgba(0,96,100,0.05)',
-                        borderRadius: '12px',
-                        borderLeft: '3px solid #006064',
-                        p: 2,
-                        '& p': { margin: '0 0 8px', fontSize: '0.875rem', lineHeight: 1.75, color: 'text.primary' },
+                        fontSize: '0.875rem',
+                        lineHeight: 1.75,
+                        color: 'text.primary',
+                        '& p': { margin: '0 0 10px' },
                         '& p:last-child': { marginBottom: 0 },
                         '& strong': { fontWeight: 700, color: '#004D40' },
-                        '& ul, & ol': { paddingLeft: '1.25rem', margin: '4px 0 8px' },
-                        '& li': { fontSize: '0.875rem', lineHeight: 1.7, color: 'text.primary', marginBottom: '2px' },
+                        // Each **Bold:** line gets a subtle section divider
+                        '& p:has(strong:first-of-type)': {
+                          borderLeft: '3px solid #00897B',
+                          paddingLeft: '10px',
+                          margin: '0 0 6px',
+                          backgroundColor: 'rgba(0,137,123,0.04)',
+                          borderRadius: '0 6px 6px 0',
+                        },
+                        '& ul, & ol': { paddingLeft: '1.1rem', margin: '4px 0 10px' },
+                        '& li': { marginBottom: '4px', listStyleType: 'none', paddingLeft: 0 },
+                        '& li input[type="checkbox"]': {
+                          marginRight: '7px', accentColor: '#006064',
+                          width: 14, height: 14, verticalAlign: 'middle',
+                          cursor: 'default',
+                        },
+                        '& h1, & h2, & h3': { fontSize: '0.9rem', fontWeight: 700, color: '#004D40', margin: '10px 0 4px' },
+                        '& code': { backgroundColor: 'rgba(0,96,100,0.1)', borderRadius: '4px', padding: '1px 5px', fontSize: '0.82rem' },
                       }}>
-                        <ReactMarkdown>{llmInsight}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{llmInsight}</ReactMarkdown>
                       </Box>
                     </MotionBox>
                   ) : (
@@ -1053,6 +1295,13 @@ export default function Workspace() {
           </Grid>
         </Grid>
       </Box>
+
+      <VideoSourceModal
+        open={isSourceModalOpen}
+        onClose={() => setIsSourceModalOpen(false)}
+        onUploadAndConnect={handleUploadAndConnect}
+        onLibrarySelect={handleLibrarySelectFromModal}
+      />
     </Box>
   );
 }
