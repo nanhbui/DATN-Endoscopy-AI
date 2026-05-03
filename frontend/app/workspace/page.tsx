@@ -911,7 +911,7 @@ export default function Workspace() {
                         transition={{ duration: 0.2 }}
                         sx={{ zIndex: 2, left: `${currentDetection.bbox.x}%`, top: `${currentDetection.bbox.y}%`, width: `${currentDetection.bbox.width}%`, height: `${currentDetection.bbox.height}%` }}
                       >
-                        <Box sx={{ position: 'absolute', top: -36, left: 0, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5, borderRadius: '8px', backdropFilter: 'blur(12px)', backgroundColor: 'rgba(0,0,0,0.55)', border: '1px solid rgba(245,158,11,0.4)', whiteSpace: 'nowrap' }}>
+                        <Box sx={{ position: 'absolute', top: currentDetection.bbox.y < 6 ? 4 : -36, left: 0, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5, borderRadius: '8px', backdropFilter: 'blur(12px)', backgroundColor: 'rgba(0,0,0,0.55)', border: '1px solid rgba(245,158,11,0.4)', whiteSpace: 'nowrap' }}>
                           <Zap size={11} color="#F59E0B" />
                           <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, color: '#FCD34D' }}>{currentDetection.label}</Typography>
                           <Box sx={{ width: '1px', height: 12, backgroundColor: 'rgba(255,255,255,0.2)' }} />
@@ -978,7 +978,7 @@ export default function Workspace() {
                         <Box
                           sx={{
                             position: 'absolute',
-                            top: -36,
+                            top: currentDetection.bbox.y < 6 ? 4 : -36,
                             left: 0,
                             display: 'flex',
                             alignItems: 'center',
@@ -1153,59 +1153,6 @@ export default function Workspace() {
                   </Box>
                 )}
               </Box>
-
-              {/* AI Detection Alert */}
-              {currentDetection && (
-                <MotionBox
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  sx={{
-                    backgroundColor: 'rgba(245,158,11,0.06)',
-                    borderRadius: '16px',
-                    border: '1px solid rgba(245,158,11,0.25)',
-                    p: 2.5,
-                  }}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: 'rgba(245,158,11,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#D97706', flexShrink: 0 }}>
-                      <AlertTriangle size={18} />
-                    </Box>
-                    <Box>
-                      <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#92400E' }}>
-                        AI phát hiện bất thường
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: '#B45309' }}>
-                        {currentDetection.label} · {(currentDetection.confidence * 100).toFixed(0)}% · <span style={{ fontFamily: 'monospace' }}>{fmtTimestamp(currentDetection.timestamp)}</span>
-                      </Typography>
-                    </Box>
-                  </Box>
-                  <Box sx={{ display: 'flex', gap: 1.25 }}>
-                    {llmInsight ? (
-                      <>
-                        <MuiButton variant="outlined" fullWidth size="small" onClick={ignoreDetection}
-                          sx={{ borderRadius: '8px', borderColor: 'rgba(245,158,11,0.35)', color: '#B45309', fontWeight: 600, py: 1, '&:hover': { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: '#D97706' } }}>
-                          Bỏ qua
-                        </MuiButton>
-                        <MuiButton variant="contained" fullWidth size="small" onClick={confirmDetection}
-                          sx={{ borderRadius: '8px', backgroundColor: '#16A34A', fontWeight: 600, py: 1, boxShadow: '0 4px 12px rgba(22,163,74,0.3)', '&:hover': { backgroundColor: '#15803D' } }}>
-                          Xác nhận
-                        </MuiButton>
-                      </>
-                    ) : (
-                      <>
-                        <MuiButton variant="outlined" fullWidth size="small" onClick={ignoreDetection}
-                          sx={{ borderRadius: '8px', borderColor: 'rgba(245,158,11,0.35)', color: '#B45309', fontWeight: 600, py: 1, '&:hover': { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: '#D97706' } }}>
-                          Bỏ qua
-                        </MuiButton>
-                        <MuiButton variant="contained" fullWidth size="small" onClick={explainMore}
-                          sx={{ borderRadius: '8px', backgroundColor: '#D97706', fontWeight: 600, py: 1, boxShadow: '0 4px 12px rgba(217,119,6,0.3)', '&:hover': { backgroundColor: '#B45309' } }}>
-                          Giải thích thêm
-                        </MuiButton>
-                      </>
-                    )}
-                  </Box>
-                </MotionBox>
-              )}
 
               {/* LLM Smart Log */}
               <Box

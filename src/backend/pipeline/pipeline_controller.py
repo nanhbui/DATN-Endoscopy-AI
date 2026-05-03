@@ -40,7 +40,13 @@ else:
     if not DEFAULT_MODEL.exists():
         DEFAULT_MODEL = _REPO_ROOT / "yolov8n.pt"
 
-CONFIDENCE_THRESHOLD = float(_os.environ.get("ENDOSCOPY_CONF", "0.45"))
+CONFIDENCE_THRESHOLD = float(_os.environ.get("ENDOSCOPY_CONF", "0.5"))
+
+# Maximum bbox area as fraction of viewport. Only used to drop EGREGIOUS whole-frame
+# detections (essentially "this whole image matches the disease"). Default 0.95 keeps
+# almost every model output — even relatively wide bboxes are useful information for
+# the doctor. Tighten via env var ENDOSCOPY_MAX_BBOX_RATIO if too noisy.
+MAX_BBOX_AREA_RATIO = float(_os.environ.get("ENDOSCOPY_MAX_BBOX_RATIO", "0.95"))
 
 # ── StrongSORT Re-ID weights ─────────────────────────────────────────────────
 _DEFAULT_REID = _REPO_ROOT / "sample_code/endocv_2024/osnet_x0_25_endocv_30.pt"
@@ -53,8 +59,10 @@ REID_WEIGHTS = Path(_os.environ.get("ENDOSCOPY_REID", str(_DEFAULT_REID)))
 VIEWPORT_W = 1300  # empirical for 1920×1080; override via env ENDOSCOPY_VIEWPORT_W
 VIEWPORT_W = int(_os.environ.get("ENDOSCOPY_VIEWPORT_W", str(VIEWPORT_W)))
 
-# Skip this many frames at the start of every video (scope insertion / title cards)
-SKIP_INITIAL_FRAMES = 90   # ≈ 3 s at 30 fps
+# Skip this many frames at the start of every video (scope insertion / title cards).
+# 90 frames ≈ 3 s at 30 fps — enough to bypass the title screens of clinical
+# recordings without dropping legitimate early detections.
+SKIP_INITIAL_FRAMES = int(_os.environ.get("ENDOSCOPY_SKIP_FRAMES", "90"))
 
 # Process every Nth frame — 1 matches sample_code behaviour (best accuracy)
 # Set FRAME_STEP=3 in .env on CPU-only servers to avoid multi-hour waits
@@ -109,6 +117,25 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     Receives commands from cmd_q: STOP | RESUME | IGNORE:<fi>:<json>
     """
     import numpy as np
+    import re as _re
+
+    # Map underscored ASCII back to common Vietnamese diacritic forms — used as a
+    # fallback when labels.txt is missing so the doctor never sees raw class names
+    # like "3_Viem_da_day_HP_am" in the UI.
+    _ASCII_TO_DIACRITIC = {
+        "Viem_thuc_quan": "Viêm thực quản",
+        "Viem_da_day_HP_am": "Viêm dạ dày HP",
+        "Viem_da_day_HP": "Viêm dạ dày HP",
+        "Ung_thu_thuc_quan": "Ung thư thực quản",
+        "Ung_thu_da_day": "Ung thư dạ dày",
+        "Loet_HTT": "Loét hoành tá tràng",
+        "Loet_hoanh_ta_trang": "Loét hoành tá tràng",
+    }
+    _PREFIX_NUM = _re.compile(r"^\d+_")
+
+    def _clean_label(raw: str) -> str:
+        s = _PREFIX_NUM.sub("", raw)  # strip leading "N_"
+        return _ASCII_TO_DIACRITIC.get(s, s.replace("_", " "))
 
     # ── GstShark env injection (must happen before gi/Gst import) ────────────
     if gstshark_enabled and gstshark_plugin_path:
@@ -155,19 +182,29 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                 print(f"[Worker] Labels load failed: {_le}", flush=True)
 
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        if torch.cuda.is_available():
+        # Use FP32 by default to match sample-code accuracy (sample_code/endocv_2024
+        # uses fp16=False). FP16 can subtly change feature values and cause the
+        # model to pick a different region as the highest-confidence detection.
+        # Set ENDOSCOPY_FP16=true to force FP16 for inference speed at potential
+        # accuracy cost on this checkpoint.
+        _use_fp16 = (_os.environ.get("ENDOSCOPY_FP16", "false").lower() == "true"
+                     and torch.cuda.is_available())
+        if _use_fp16:
             try:
                 model.half()
                 model(dummy, verbose=False, conf=0.99)
-                print("[Worker] YOLO FP16 (CUDA)", flush=True)
+                print("[Worker] YOLO FP16 (CUDA) — speed mode", flush=True)
             except Exception as fp16_exc:
                 print(f"[Worker] FP16 failed ({fp16_exc}), falling back to FP32", flush=True)
                 model.float()
                 model(dummy, verbose=False, conf=0.99)
                 print("[Worker] YOLO FP32 (CUDA fallback)", flush=True)
         else:
+            if torch.cuda.is_available():
+                model.float()
             model(dummy, verbose=False, conf=0.99)
-            print("[Worker] YOLO FP32 (CPU)", flush=True)
+            dev = "CUDA" if torch.cuda.is_available() else "CPU"
+            print(f"[Worker] YOLO FP32 ({dev}) — accuracy mode (matches sample_code)", flush=True)
         print("[Worker] YOLO warm-up done", flush=True)
     except Exception as exc:
         print(f"[Worker] YOLO load/warm-up failed: {exc}", flush=True)
@@ -338,15 +375,58 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
             return "Hang vị"
         return "Môn vị"
 
+    # ── Viewport detection ─────────────────────────────────────────────────
+    # Cache: (x, y, w, h) of bright scope view; None until detected.
+    _viewport_cache: list = [None]
+
+    def _detect_viewport(frame: np.ndarray) -> tuple[int, int, int, int]:
+        """Auto-detect scope viewport bounds (replaces hardcoded 1300/1920 crop).
+
+        Works for both video formats:
+        - Scope-only videos (e.g. endoscope2.mp4) where view is centered
+        - Clinical recordings (e.g. NSDD) where view is on left + info panel on right
+
+        Returns (x, y, w, h) of bounding rect around brightest contiguous region.
+        Falls back to full frame if detection fails.
+        """
+        if _viewport_cache[0] is not None:
+            return _viewport_cache[0]
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            _, mask = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
+            # Morphology to merge close bright regions (handles scope vignette gradient)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                vp = (0, 0, frame.shape[1], frame.shape[0])
+            else:
+                largest = max(contours, key=cv2.contourArea)
+                x, y, w, h = cv2.boundingRect(largest)
+                # Sanity: viewport should be > 30 % of frame area; otherwise fallback
+                if w * h < frame.shape[0] * frame.shape[1] * 0.3:
+                    vp = (0, 0, frame.shape[1], frame.shape[0])
+                else:
+                    vp = (x, y, w, h)
+            _viewport_cache[0] = vp
+            print(f"[Worker] Auto-detected viewport: x={vp[0]} y={vp[1]} w={vp[2]} h={vp[3]} "
+                  f"(frame {frame.shape[1]}x{frame.shape[0]})", flush=True)
+            return vp
+        except Exception as _ve:
+            print(f"[Worker] Viewport detection failed: {_ve} — using full frame", flush=True)
+            vp = (0, 0, frame.shape[1], frame.shape[0])
+            _viewport_cache[0] = vp
+            return vp
+
     def _is_diagnostic_frame(frame: np.ndarray, fi: int) -> bool:
         """Return False for non-diagnostic frames: scope insertion, dark frames, text-only cards."""
         # Skip scope insertion / title cards at the very start
         if fi < _skip:
             return False
 
-        # Evaluate brightness on viewport crop only (left 68% excludes info panel)
-        _vw_crop = int(frame.shape[1] * (1300 / 1920))
-        gray = cv2.cvtColor(frame[:, :_vw_crop], cv2.COLOR_BGR2GRAY)
+        # Evaluate brightness on auto-detected viewport (handles both scope-centered
+        # and left-aligned-with-info-panel videos)
+        _vx, _vy, _vw, _vh = _detect_viewport(frame)
+        gray = cv2.cvtColor(frame[_vy:_vy+_vh, _vx:_vx+_vw], cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
 
         # Endoscopy viewport is a bright circle on a black border (~60-70% fill).
@@ -370,11 +450,13 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
 
     def _crop_b64(frame: np.ndarray, bbox: list) -> Optional[str]:
         try:
-            h, w = frame.shape[:2]
-            _vw = int(w * (1300 / 1920))  # left 68% = scope viewport (scales with frame)
-            out = frame[:, :_vw].copy()
-            # Draw bbox so the doctor sees exactly what triggered the detection
+            # Crop to scope viewport for the thumbnail; translate full-frame bbox
+            # coordinates into viewport-relative coords before drawing the rectangle.
+            _vx, _vy, _vw, _vh = _detect_viewport(frame)
+            out = frame[_vy:_vy+_vh, _vx:_vx+_vw].copy()
             x1, y1, x2, y2 = map(int, bbox)
+            x1, y1 = x1 - _vx, y1 - _vy
+            x2, y2 = x2 - _vx, y2 - _vy
             cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 255), 3)
             # Scale to max 800px wide to keep payload reasonable
             scale = min(1.0, 800 / max(out.shape[1], out.shape[0]))
@@ -391,6 +473,7 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
     confirmed: list[dict] = []
     frame_index = 0
     paused = False
+    should_stop = False
 
     try:
         while True:
@@ -401,7 +484,8 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                 except Exception:
                     break
                 if cmd == "STOP":
-                    return
+                    should_stop = True
+                    break
                 elif cmd == "RESUME":
                     paused = False
                 elif cmd.startswith("IGNORE:"):
@@ -411,6 +495,9 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                         data = _json.loads(parts[2])
                         _ignored.append({"fi": fi, "bbox": data["bbox"]})
                     paused = False
+
+            if should_stop:
+                break  # graceful — let finally + EOS event run
 
             if paused:
                 time.sleep(0.02)
@@ -466,12 +553,16 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                 print(f"[Worker] Frame shape: {frame.shape} (h×w×c)", flush=True)
             if model is not None and frame_index % FRAME_STEP == 0 and _is_diagnostic_frame(frame, frame_index):
                 try:
-                    # Crop left 68% — removes info panel; x-coords valid in full-frame space.
-                    _vw = int(frame.shape[1] * (1300 / 1920))
-                    frame_inf = frame[:, :_vw]
-                    _fh, _fw = frame_inf.shape[:2]
+                    # Run inference on FULL frame (matches sample-code behaviour
+                    # endocv_2024/tracking_yolov8_strongsort.py at line 192) — cropping
+                    # to viewport changes YOLO's letterbox padding and can suppress
+                    # detections the model would otherwise return on the full frame.
+                    # The auto-detected viewport is used only for filtering detections
+                    # whose centres fall outside the scope view (e.g. info-panel FPs).
+                    _vx, _vy, _vfw, _vfh = _detect_viewport(frame)
+                    _fh, _fw = frame.shape[:2]
 
-                    results = model(frame_inf, conf=conf, verbose=False)
+                    results = model(frame, conf=conf, verbose=False)
 
                     # ── Build raw detections array for tracker [x1,y1,x2,y2,conf,cls] ──
                     raw_dets = []
@@ -482,9 +573,10 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                             if box.conf is None or box.conf.shape[0] == 0:
                                 continue
                             _bx1, _by1, _bx2, _by2 = box.xyxy[0].tolist()
-                            _bcx = (_bx1 + _bx2) / 2
-                            # Drop info-panel FPs
-                            if _bcx > _fw:
+                            # Drop detections whose centre is outside the scope viewport
+                            # (handles info-panel FPs in clinical recordings).
+                            _cx, _cy = (_bx1 + _bx2) / 2, (_by1 + _by2) / 2
+                            if not (_vx <= _cx <= _vx + _vfw and _vy <= _cy <= _vy + _vfh):
                                 continue
                             raw_dets.append([_bx1, _by1, _bx2, _by2, float(box.conf[0]), int(box.cls[0])])
 
@@ -496,7 +588,7 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
 
                     # ── Update tracker (or fall back to raw YOLO boxes) ──────────
                     if tracker is not None:
-                        tracks = tracker.update(dets_np, frame_inf)
+                        tracks = tracker.update(dets_np, frame)  # full frame for ReID
                         # tracks: [x1,y1,x2,y2,track_id,conf,cls,det_ind]
                         if len(tracks) == 0:
                             frame_index += 1
@@ -508,35 +600,41 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                         track_boxes = [[*d[:4], 0, d[4], d[5], 0] for d in raw_dets]
                         use_tracker = False
 
-                    for trk in track_boxes:
+                    # Pick the HIGHEST-confidence detection in this frame instead of
+                    # the first one — earlier code broke on first iter, which often
+                    # picked a noisy low-conf box and dropped the better detection.
+                    sorted_tracks = sorted(track_boxes, key=lambda t: float(t[5]), reverse=True)
+
+                    for trk in sorted_tracks:
+                        # bbox is in full-frame coords (inference now runs on full frame)
                         _x1, _y1, _x2, _y2 = float(trk[0]), float(trk[1]), float(trk[2]), float(trk[3])
                         track_id = int(trk[4])
                         det_conf  = float(trk[5])
                         cls_id    = int(trk[6])
-                        label     = model_names.get(cls_id, f"class_{cls_id}")
+                        label     = _clean_label(model_names.get(cls_id, f"class_{cls_id}"))
 
                         if _is_ignored(frame_index, [_x1, _y1, _x2, _y2]):
                             continue
 
-                        _bw, _bh = _x2 - _x1, _y2 - _y1
-
-                        # Skip absurd detections (> 70% frame area)
-                        if (_bw * _bh) / (_fw * _fh) > 0.70:
-                            print(f"[Worker] Skipped oversized bbox ({(_bw*_bh)/(_fw*_fh)*100:.0f}%)", flush=True)
+                        # Suppress whole-frame detections (frame-level classification,
+                        # e.g. diffuse HP gastritis). Compute area ratio against the
+                        # SCOPE VIEWPORT, not the full frame — otherwise videos with an
+                        # info panel would always look smaller than they really are.
+                        _bw_seg, _bh_seg = _x2 - _x1, _y2 - _y1
+                        _area_ratio = (_bw_seg * _bh_seg) / max(_vfw * _vfh, 1)
+                        if _area_ratio > MAX_BBOX_AREA_RATIO:
+                            print(f"[Worker] Suppressed whole-frame detection "
+                                  f"({label} conf={det_conf:.2f} area={_area_ratio*100:.0f}% "
+                                  f"> {MAX_BBOX_AREA_RATIO*100:.0f}% of viewport) — "
+                                  f"frame-level diagnosis, not a localized lesion", flush=True)
                             continue
 
-                        # Preserve raw YOLO geometry; add small uniform padding
-                        _PAD = 8.0
-                        _x1 = max(0.0, _x1 - _PAD)
-                        _y1 = max(0.0, _y1 - _PAD)
-                        _x2 = min(float(_fw), _x2 + _PAD)
-                        _y2 = min(float(_fh), _y2 + _PAD)
                         xyxy = [_x1, _y1, _x2, _y2]
 
-                        # Normalize bbox to 1920×1080 virtual space so the frontend
-                        # coordinate constants (FRAME_W=1920, FRAME_H=1080) remain
-                        # correct regardless of the actual source video resolution.
-                        _fw_full = frame.shape[1]  # full frame width before crop
+                        # bbox is already in full-frame coords; normalize to 1920×1080
+                        # virtual space so the frontend's FRAME_W=1920 / FRAME_H=1080
+                        # constants stay correct for any source resolution.
+                        _fw_full = frame.shape[1]
                         _fh_full = frame.shape[0]
                         xyxy_norm = [
                             xyxy[0] / _fw_full * 1920,
@@ -545,14 +643,15 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                             xyxy[3] / _fh_full * 1080,
                         ]
 
-                        # Spatial-temporal dedup (replaces track-ID dedup which was
-                        # broken by max_age keeping old IDs alive too long)
+                        # Spatial-temporal dedup
                         if _is_recently_reported(timestamp_ms, xyxy_norm, label):
                             continue
 
                         print(f"[Worker] Detection track_id={track_id} {label} conf={det_conf:.2f} bbox={[round(v,1) for v in xyxy]}", flush=True)
                         location = _infer_location(xyxy, frame.shape)
-                        thumbnail_b64 = _crop_b64(frame, xyxy)  # uses viewport-crop coords
+                        # _crop_b64 handles full-frame bbox internally (translates to
+                        # viewport coords for the thumbnail).
+                        thumbnail_b64 = _crop_b64(frame, xyxy)
                         det_data = {
                             "frame_index": frame_index,
                             "timestamp_ms": timestamp_ms,
@@ -568,7 +667,7 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                         confirmed.append(det_data)
                         result_q.put({"event": "DETECTION_FOUND", "data": det_data})
                         paused = True
-                        break  # one detection per frame
+                        break  # one detection per frame (already the best by conf)
                 except Exception as exc:
                     print(f"[Worker] YOLO/tracker error frame {frame_index}: {exc}", flush=True)
 
@@ -702,6 +801,8 @@ class PipelineController:
 
     def _bridge_loop(self) -> None:
         """Read subprocess events and forward to asyncio queue."""
+        accumulated: list[dict] = []
+        saw_eos = False
         while True:
             if self._proc and not self._proc.is_alive() and (
                 self._result_q is None or self._result_q.empty()
@@ -717,13 +818,28 @@ class PipelineController:
                 self._pending = evt["data"]
                 self._state = PipelineState.PAUSED_WAITING_INPUT
                 self._push_event(_state_event(PipelineState.PAUSED_WAITING_INPUT))
+                accumulated.append(evt["data"])
 
             # Track confirmed detections
             if evt["event"] == "VIDEO_FINISHED":
                 self._confirmed = evt["data"].get("detections", [])
                 self._set_state(PipelineState.EOS_SUMMARY)
+                saw_eos = True
 
             self._push_event(evt)
 
             if evt["event"] == "VIDEO_FINISHED":
                 break
+
+        # Safety net: worker died without sending VIDEO_FINISHED (crash, OOM,
+        # SIGKILL, STOP race). Synthesize one so the FE always transitions to
+        # EOS_SUMMARY and the report popup appears.
+        if not saw_eos:
+            print(
+                f"[Bridge] Worker exited without EOS — synthesizing VIDEO_FINISHED "
+                f"with {len(accumulated)} detections",
+                flush=True,
+            )
+            self._confirmed = accumulated
+            self._set_state(PipelineState.EOS_SUMMARY)
+            self._push_event(_eos_event(accumulated))
