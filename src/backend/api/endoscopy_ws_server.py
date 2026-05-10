@@ -57,6 +57,12 @@ sys.path.insert(0, str(_PIPELINE_DIR))
 
 from pipeline_controller import PipelineController, PipelineState   # noqa: E402
 from video_library import VideoLibrary                               # noqa: E402
+from llm_prompts import (                                              # noqa: E402
+    LESION_REPORT_SCHEMA,
+    LESION_REPORT_PROMPT,
+    build_lesion_user_message,
+)
+from db import init_db, save_lesion_report                              # noqa: E402
 
 # ── Config ───────────────────────────────────────────────────────────────────
 # ENDOSCOPY_UPLOAD_DIR env var overrides default (needed on GPU server)
@@ -69,6 +75,14 @@ LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 LLM_MODEL_VISION  = os.getenv("OPENAI_MODEL_VISION",  "gpt-4o")
 LLM_MODEL_FOLLOWUP = os.getenv("OPENAI_MODEL_FOLLOWUP", "gpt-4o-mini")
+
+# ── LLM backend selector ─────────────────────────────────────────────────────
+# LLM_BACKEND=ollama  → use local Ollama at OLLAMA_BASE_URL (default for Phase A+)
+# LLM_BACKEND=openai  → use OpenAI SaaS (legacy, requires OPENAI_API_KEY)
+# Both backends share the OpenAI Python SDK — only base_url + api_key differ.
+LLM_BACKEND     = os.getenv("LLM_BACKEND", "openai").lower()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
 LLM_SYSTEM_PROMPT = """
 Bạn là trợ lý nội soi tiêu hóa chuyên nghiệp, hỗ trợ bác sĩ Việt Nam trong ca nội soi dạ dày.
 Nhiệm vụ của bạn là phân tích phát hiện tổn thương từ hình ảnh nội soi và đưa ra nhận định lâm sàng.
@@ -172,20 +186,56 @@ app.add_middleware(
 )
 app.include_router(voice_router)
 
+# Phase A persistence — initialize SQLite on app startup so that the very
+# first lesion report can be saved without a cold-start race. init_db is
+# idempotent (CREATE IF NOT EXISTS).
+init_db()
+
 # ── In-memory session registry ───────────────────────────────────────────────
 # video_id → { controller, video_path, confirmed_detections, library_id }
 _sessions: Dict[str, dict] = {}
 
 _library = VideoLibrary(LIBRARY_DIR)
 
-_openai_client: Optional[AsyncOpenAI] = None
+_llm_client: Optional[AsyncOpenAI] = None
 
 
-def _get_openai() -> Optional[AsyncOpenAI]:
-    global _openai_client
-    if _openai_client is None and OPENAI_API_KEY:
-        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai_client
+def _get_llm_client() -> Optional[AsyncOpenAI]:
+    """Return a singleton AsyncOpenAI-compatible client for the active backend.
+
+    LLM_BACKEND=ollama → Ollama local (no API key needed)
+    LLM_BACKEND=openai → OpenAI SaaS (requires OPENAI_API_KEY)
+
+    Both expose identical chat.completions.create() interface; the call sites
+    only need to pick the right model name via _llm_model_name().
+    """
+    global _llm_client
+    if _llm_client is not None:
+        return _llm_client
+    if LLM_BACKEND == "ollama":
+        # Any non-empty api_key works for Ollama's openai-compat endpoint
+        _llm_client = AsyncOpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
+        logger.info("LLM backend: ollama @ {} (model={})", OLLAMA_BASE_URL, OLLAMA_MODEL)
+    elif OPENAI_API_KEY:
+        _llm_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        logger.info("LLM backend: openai (vision={}, followup={})",
+                    LLM_MODEL_VISION, LLM_MODEL_FOLLOWUP)
+    return _llm_client
+
+
+def _llm_model_name(role: str = "vision") -> str:
+    """Return the model name appropriate for the active backend.
+
+    role="vision"   → primary detection report / image analysis
+    role="followup" → text-only Q&A (cheaper on OpenAI; same model on Ollama)
+    """
+    if LLM_BACKEND == "ollama":
+        return OLLAMA_MODEL
+    return LLM_MODEL_VISION if role == "vision" else LLM_MODEL_FOLLOWUP
+
+
+# Backward-compat shim: legacy code paths still call _get_openai()
+_get_openai = _get_llm_client
 
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
@@ -536,7 +586,9 @@ async def ws_analysis(websocket: WebSocket, video_id: str):
                 if pending and not sess.get("llm_streaming"):
                     sess["conv_history"] = []
                     sess["llm_streaming"] = True
-                    asyncio.ensure_future(_stream_llm(websocket, pending, sess, _ws_lock))
+                    # Phase A: structured 3-section report (replaces legacy
+                    # free-form markdown _stream_llm). Frontend renders cards.
+                    asyncio.ensure_future(_stream_lesion_report(websocket, pending, sess, video_id, _ws_lock))
                 ctrl.send_action(action)
 
             elif action == "ACTION_FOLLOW_UP":
@@ -666,6 +718,170 @@ async def _stream_llm(websocket: WebSocket, detection: dict, sess: dict, ws_lock
         await _send({"event": "ERROR", "data": {"message": f"LLM error: {exc}"}})
     finally:
         sess["llm_streaming"] = False
+
+
+async def _stream_lesion_report(websocket: WebSocket, detection: dict,
+                                 sess: dict, video_id: str,
+                                 ws_lock: asyncio.Lock | None = None) -> None:
+    """Generate structured 3-section lesion report (Kỹ thuật / Mô tả / Kết luận).
+
+    Replaces the legacy free-form markdown response from _stream_llm. Calls the
+    LLM (Ollama or OpenAI per LLM_BACKEND env) with response_format=json_schema
+    to force a structured payload that the frontend renders as cards.
+
+    Sends the report as a SINGLE LESION_REPORT_DONE event (no streaming chunks)
+    because JSON schema responses cannot be partial-parsed mid-stream — the full
+    object must be received before parsing.
+    """
+    async def _send(data: dict) -> None:
+        if ws_lock:
+            async with ws_lock:
+                await websocket.send_json(data)
+        else:
+            await websocket.send_json(data)
+
+    client = _get_llm_client()
+    lesion = detection.get("lesion", {})
+    label  = lesion.get("label", "Unknown")
+    conf   = lesion.get("confidence", 0.0)
+    frame_b64    = detection.get("frame_b64")
+    frame_index  = detection.get("frame_index", 0)
+    timestamp_ms = detection.get("timestamp_ms", 0)
+
+    # Cache by (label, bbox-signature) — finer-grained than the legacy
+    # label:location key so different lesion instances of the same class get
+    # distinct reports rather than a recycled generic one.
+    bbox = lesion.get("bbox", [0, 0, 0, 0])
+    bbox_sig = "_".join(str(int(v / 50) * 50) for v in bbox[:4])  # quantized to 50px
+    cache_key = f"report:{label}:{bbox_sig}"
+
+    if cache_key in sess.get("llm_cache", {}):
+        logger.info("Lesion report cache hit: {}", cache_key)
+        cached = sess["llm_cache"][cache_key]
+        await _send({"event": "LESION_REPORT_DONE",
+                     "data": {"frame_index": frame_index, "report": cached}})
+        return
+
+    if client is None:
+        logger.warning("No LLM client available — sending mock report")
+        mock = _mock_lesion_report(label, conf, frame_index, timestamp_ms)
+        await _send({"event": "LESION_REPORT_DONE",
+                     "data": {"frame_index": frame_index, "report": mock}})
+        return
+
+    user_text = build_lesion_user_message(label, conf, timestamp_ms, frame_index)
+    if frame_b64:
+        user_content = [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}", "detail": "low"}},
+            {"type": "text", "text": user_text},
+        ]
+    else:
+        logger.warning("Lesion report fallback text-only: frame_b64 missing for {}", label)
+        user_content = user_text
+
+    messages = [
+        {"role": "system", "content": LESION_REPORT_PROMPT},
+        {"role": "user",   "content": user_content},
+    ]
+
+    # response_format spec: Ollama (Qwen2.5+) supports json_schema natively;
+    # OpenAI uses the same param name. The schema enforces the 3-section structure.
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "endoscopy_lesion_report", "schema": LESION_REPORT_SCHEMA},
+    }
+
+    t0 = time.monotonic()
+    try:
+        # No streaming for JSON schema — must wait for full response then parse.
+        completion = await client.chat.completions.create(
+            model=_llm_model_name("vision"),
+            messages=messages,
+            response_format=response_format,
+            max_tokens=1500,
+        )
+        raw_json = completion.choices[0].message.content or "{}"
+        try:
+            report = json.loads(raw_json)
+        except json.JSONDecodeError as je:
+            logger.error("Lesion report JSON parse failed: {} — raw: {}", je, raw_json[:200])
+            await _send({"event": "ERROR", "data": {"message": f"Báo cáo AI lỗi định dạng — {je}"}})
+            return
+
+        latency = time.monotonic() - t0
+        logger.info("Lesion report generated: model={} latency={:.2f}s severity={}",
+                    _llm_model_name("vision"), latency,
+                    report.get("conclusion", {}).get("severity", "?"))
+
+        sess.setdefault("llm_cache", {})[cache_key] = report
+
+        # Phase A persistence — save the parsed report so Phase B summary
+        # chatbot and PDF export can read back without re-running the LLM.
+        # Failure here is non-fatal: log and continue (the report still
+        # reaches the user via the WS event below).
+        save_lesion_report(
+            session_id=video_id,
+            frame_index=frame_index,
+            report=report,
+            model=_llm_model_name("vision"),
+            generated_at_ms=int(time.time() * 1000),
+        )
+
+        # Maintain conv_history for follow-up Q&A on this detection — store the
+        # initial user message + the assistant's JSON response so subsequent
+        # ACTION_FOLLOW_UP calls have context.
+        sess["conv_history"] = [
+            {"role": "user",      "content": user_content},
+            {"role": "assistant", "content": raw_json},
+        ]
+
+        await _send({"event": "LESION_REPORT_DONE",
+                     "data": {"frame_index": frame_index, "report": report}})
+
+    except Exception as exc:
+        logger.error("Lesion report stream error: {}", exc)
+        await _send({"event": "ERROR", "data": {"message": f"LLM error: {exc}"}})
+    finally:
+        sess["llm_streaming"] = False
+
+
+def _mock_lesion_report(label: str, confidence: float, frame_index: int, timestamp_ms: int) -> dict:
+    """Fallback structured report when no LLM client available — keeps frontend
+    working in dev environments without OpenAI key or Ollama running."""
+    secs = timestamp_ms / 1000.0
+    minutes = int(secs // 60)
+    seconds = secs - minutes * 60
+    ts_label = f"{minutes} phút {seconds:.0f} giây" if minutes else f"{seconds:.1f} giây"
+    return {
+        "technique": {
+            "method": "Nội soi dạ dày-tá tràng AI-assisted (mock)",
+            "device": "Không xác định",
+            "timestamp": f"{ts_label} — frame {frame_index}",
+        },
+        "description": {
+            "size_mm":     "Không xác định",
+            "paris_class": "Phân loại 0-IIb (Paris 0-IIb, phẳng hoàn toàn)",
+            "surface":     "Không quan sát rõ (mock)",
+            "color":       "Không quan sát rõ (mock)",
+            "margin":      "Không quan sát rõ (mock)",
+            "vascular":    "Không quan sát rõ (mock)",
+            "fluid":       "Không thấy",
+        },
+        "conclusion": {
+            "primary_dx":  f"{label} (mock — LLM client unavailable)",
+            "severity":    "trung bình",
+            "differential": [
+                {"dx": f"{label} (primary, mock)", "probability_pct": 60},
+                {"dx": "Tiền ung thư (precancerous lesion)", "probability_pct": 30},
+            ],
+            "recommendations": [
+                "Khu vực cần sinh thiết để loại trừ ung thư",
+                "Cân nhắc test CLO tại chỗ phát hiện H. pylori",
+                "Tái khám 6-8 tuần sau điều trị",
+            ],
+            "ai_confidence": int(confidence * 100),
+        },
+    }
 
 
 async def _stream_follow_up(websocket: WebSocket, text: str, sess: dict, ws_lock: asyncio.Lock | None = None) -> None:

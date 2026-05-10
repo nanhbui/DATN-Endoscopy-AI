@@ -25,13 +25,32 @@ export interface DetectionData {
   frame_b64?: string;
 }
 
+// Structured lesion report (Phase A) — 3-section bilingual VN+EN format.
+// Backend sends this as a single LESION_REPORT_DONE event after the LLM
+// finishes; no chunk streaming for JSON-schema responses.
+export interface LesionReport {
+  technique: { method: string; device: string; timestamp: string };
+  description: {
+    size_mm: string; paris_class: string; surface: string; color: string;
+    margin: string; vascular: string; fluid: string;
+  };
+  conclusion: {
+    primary_dx: string;
+    severity: "thấp" | "trung bình" | "cao";
+    differential: { dx: string; probability_pct: number }[];
+    recommendations: string[];
+    ai_confidence: number;
+  };
+}
+
 export type ServerEvent =
-  | { event: "DETECTION_FOUND";  data: DetectionData }
-  | { event: "STATE_CHANGE";     data: { state: string } }
-  | { event: "LLM_CHUNK";        data: { chunk: string } }
-  | { event: "LLM_DONE";         data: Record<string, never> }
-  | { event: "VIDEO_FINISHED";   data: { detections: DetectionData[] } }
-  | { event: "ERROR";            data: { message: string } };
+  | { event: "DETECTION_FOUND";    data: DetectionData }
+  | { event: "STATE_CHANGE";       data: { state: string } }
+  | { event: "LLM_CHUNK";          data: { chunk: string } }
+  | { event: "LLM_DONE";           data: Record<string, never> }
+  | { event: "LESION_REPORT_DONE"; data: { frame_index: number; report: LesionReport } }
+  | { event: "VIDEO_FINISHED";     data: { detections: DetectionData[] } }
+  | { event: "ERROR";              data: { message: string } };
 
 // ── Outbound action types (client → server) ───────────────────────────────────
 

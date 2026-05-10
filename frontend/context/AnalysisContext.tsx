@@ -18,7 +18,47 @@ import {
   selectLibraryVideo,
   type DetectionData,
   type ServerEvent,
+  type LesionReport,
 } from "@/lib/ws-client";
+
+// Phase A bridge: render structured lesion report as markdown until the
+// dedicated <LesionReportCard> component (task A4) lands. Keeps the existing
+// ReactMarkdown render path in workspace alive.
+function lesionReportToMarkdown(r: LesionReport): string {
+  const sevEmoji = r.conclusion.severity === "cao" ? "🔴"
+                 : r.conclusion.severity === "trung bình" ? "🟡" : "🟢";
+  const diff = r.conclusion.differential
+    .map((d) => `- ${d.dx} — **${d.probability_pct}%**`).join("\n");
+  const recs = r.conclusion.recommendations.map((s) => `- ${s}`).join("\n");
+  return [
+    `### 🔬 Kỹ thuật`,
+    `- **Phương pháp:** ${r.technique.method}`,
+    `- **Thiết bị:** ${r.technique.device}`,
+    `- **Thời điểm:** ${r.technique.timestamp}`,
+    ``,
+    `### 📋 Mô tả tổn thương`,
+    `- **Kích thước:** ${r.description.size_mm}`,
+    `- **Phân loại Paris:** ${r.description.paris_class}`,
+    `- **Bề mặt:** ${r.description.surface}`,
+    `- **Màu sắc:** ${r.description.color}`,
+    `- **Bờ:** ${r.description.margin}`,
+    `- **Mạch máu:** ${r.description.vascular}`,
+    `- **Dịch:** ${r.description.fluid}`,
+    ``,
+    `### 🩺 Kết luận`,
+    `**Chẩn đoán chính:** ${r.conclusion.primary_dx}`,
+    ``,
+    `**Mức độ:** ${sevEmoji} ${r.conclusion.severity}`,
+    ``,
+    `**Chẩn đoán phân biệt:**`,
+    diff,
+    ``,
+    `**Khuyến nghị:**`,
+    recs,
+    ``,
+    `*AI confidence: ${r.conclusion.ai_confidence}%*`,
+  ].join("\n");
+}
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -32,7 +72,14 @@ export interface Detection {
   bbox: { x: number; y: number; width: number; height: number };
   timestamp: number;
   frame_b64?: string;
+  /** Markdown rendering of the structured lesion report (legacy fallback +
+   *  Phase A bridge). Kept for ReactMarkdown surfaces and history that
+   *  predate <LesionReportCard>. */
   llmInsight?: string;
+  /** Structured lesion report from backend LESION_REPORT_DONE event. When
+   *  present, UI renders <LesionReportCard>; falls back to llmInsight markdown
+   *  when only the legacy field exists. */
+  lesionReport?: LesionReport;
   status?: DetectionStatus;
 }
 
@@ -264,6 +311,28 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
           ...sess,
           detections: sess.detections.map((d, i) =>
             i === 0 ? { ...d, llmInsight: insight || d.llmInsight, status: "analyzed" } : d,
+          ),
+        }));
+        break;
+      }
+      case "LESION_REPORT_DONE": {
+        // Store both the structured report (for <LesionReportCard>) and a
+        // markdown rendering (for ReactMarkdown surfaces + voice history).
+        // The card prefers `lesionReport`; falls back to `llmInsight` when
+        // only the legacy field exists.
+        explainInFlightRef.current = false;
+        setIsListeningVoice(false);
+        setPipelineState("PAUSED_WAITING_INPUT");
+        const report = evt.data.report;
+        const md = lesionReportToMarkdown(report);
+        llmInsightRef.current = md;
+        setLlmInsight(md);
+        updateCurrentSession((sess) => ({
+          ...sess,
+          detections: sess.detections.map((d, i) =>
+            i === 0
+              ? { ...d, lesionReport: report, llmInsight: md, status: "analyzed" }
+              : d,
           ),
         }));
         break;

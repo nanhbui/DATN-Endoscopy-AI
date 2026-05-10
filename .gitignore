@@ -60,3 +60,8 @@ Thumbs.db
 
 .claude
 sample_code/
+
+# SQLite — runtime DB files, never commit
+*.db-shm
+*.db-wal
+src/backend/api/data/endoscopy.db
