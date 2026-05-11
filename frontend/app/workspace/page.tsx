@@ -33,6 +33,8 @@ import { API_BASE } from '@/lib/ws-client';
 import { useAnalysis, type Detection, type DetectionStatus } from '@/context/AnalysisContext';
 import { useVoiceControl } from '@/hooks/use-voice-control';
 import { VideoSourceModal } from '@/components/video-source-modal';
+import { LesionReportCard } from '@/components/lesion-report-card';
+import { DisclaimerBanner } from '@/components/disclaimer';
 
 import TextField from '@mui/material/TextField';
 import ToggleButton from '@mui/material/ToggleButton';
@@ -462,7 +464,13 @@ function SessionReportModal({ detections, onClose, onRestart, onGoReport, isNavi
 
                 <Divider />
 
-                {det.llmInsight ? (
+                {det.lesionReport ? (
+                  <Box>
+                    <Typography sx={{ fontSize: '0.68rem', fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.07em', mb: 1.25 }}>Phân tích AI</Typography>
+                    <DisclaimerBanner />
+                    <LesionReportCard report={det.lesionReport} />
+                  </Box>
+                ) : det.llmInsight ? (
                   <Box>
                     <Typography sx={{ fontSize: '0.68rem', fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.07em', mb: 1.25 }}>Phân tích AI</Typography>
                     <Box sx={{
@@ -1395,6 +1403,11 @@ export default function Workspace() {
                         Đang tải phân tích từ LLM...
                       </Typography>
                     </Box>
+                  ) : currentDetection?.lesionReport ? (
+                    <MotionBox initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
+                      <DisclaimerBanner />
+                      <LesionReportCard report={currentDetection.lesionReport} />
+                    </MotionBox>
                   ) : llmInsight ? (
                     <MotionBox initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
                       <Box sx={{
