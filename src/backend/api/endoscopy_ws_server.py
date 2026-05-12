@@ -63,8 +63,14 @@ from llm_prompts import (                                              # noqa: E
     build_lesion_user_message,
 )
 from db import (                                                       # noqa: E402
-    init_db, save_lesion_report,
+    init_db, save_lesion_report, get_lesion_reports_for_session,
     save_false_positive, load_all_false_positives, matches_false_positive,
+    save_session_summary, get_session_summary,
+    append_qa_message, get_qa_history,
+)
+from summary_prompts import (                                          # noqa: E402
+    SESSION_SUMMARY_SCHEMA, SESSION_SUMMARY_PROMPT,
+    build_session_summary_input, build_session_qa_messages,
 )
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -562,6 +568,13 @@ async def ws_analysis(websocket: WebSocket, video_id: str):
             # Track confirmed detections (user did NOT ignore)
             if evt["event"] == "VIDEO_FINISHED":
                 sess["confirmed_detections"] = evt["data"]["detections"]
+                # Phase B — fire session-summary in the background. We don't
+                # block VIDEO_FINISHED delivery; FE switches to EOS state
+                # immediately and shows a "Đang tổng hợp..." skeleton until
+                # SESSION_SUMMARY_DONE arrives ~5-10s later.
+                asyncio.ensure_future(
+                    _stream_session_summary(websocket, sess, video_id, _ws_lock)
+                )
 
             # Phase D: auto-skip detections matching known false-positives.
             # Filter at this layer (main process) rather than in the worker
@@ -623,6 +636,17 @@ async def ws_analysis(websocket: WebSocket, video_id: str):
                 text = msg.get("payload", {}).get("text", "")
                 if text.strip():
                     asyncio.ensure_future(_stream_follow_up(websocket, text, sess, _ws_lock))
+
+            elif action == "ACTION_SESSION_QA":
+                # Phase B — session-level Q&A (distinct from ACTION_FOLLOW_UP
+                # which is per-detection LLM conversation). Reads summary +
+                # all reports + history as context, streams the answer back,
+                # persists both user + assistant turns to qa_messages.
+                text = (msg.get("payload") or {}).get("text", "").strip()
+                if text:
+                    asyncio.ensure_future(
+                        _stream_session_qa(websocket, text, sess, video_id, _ws_lock)
+                    )
 
             elif action in ("ACTION_IGNORE", "ACTION_CONFIRM"):
                 sess["conv_history"] = []
@@ -1048,6 +1072,197 @@ def _mock_llm_response(label: str, location: str) -> str:
         "- [ ] Ghi nhận kích thước và đặc điểm hình thái.\n"
         "- [ ] Hẹn tái khám nội soi sau 4–6 tuần nếu điều trị nội khoa."
     )
+
+
+# ── Phase B: Session summary + Q&A chatbot ───────────────────────────────────
+
+async def _stream_session_summary(websocket: WebSocket, sess: dict,
+                                   video_id: str,
+                                   ws_lock: asyncio.Lock | None = None) -> None:
+    """Generate session-level summary at EOS — gộp toàn bộ lesion_reports
+    của session thành 1 structured summary theo SESSION_SUMMARY_SCHEMA.
+
+    Triggered when VIDEO_FINISHED fires. Reads all per-detection reports
+    from SQLite (Phase A persistence), runs them through the summary LLM
+    call (text-only — no images needed since reports already analyzed them),
+    saves the summary, sends SESSION_SUMMARY_DONE event to FE.
+    """
+    async def _send(data: dict) -> None:
+        if ws_lock:
+            async with ws_lock:
+                await websocket.send_json(data)
+        else:
+            await websocket.send_json(data)
+
+    reports = get_lesion_reports_for_session(video_id)
+    if not reports:
+        logger.info("Session summary skipped: no reports for {}", video_id)
+        await _send({"event": "SESSION_SUMMARY_DONE",
+                     "data": {"summary": None, "reason": "no_reports"}})
+        return
+
+    confirmed_count = len(sess.get("confirmed_detections", []))
+    ignored_count = max(0, len(reports) - confirmed_count)
+
+    client = _get_llm_client()
+    if client is None:
+        logger.warning("Session summary: no LLM client, sending mock")
+        mock = _mock_session_summary(reports, confirmed_count, ignored_count)
+        save_session_summary(video_id, mock, "mock", int(time.time() * 1000))
+        await _send({"event": "SESSION_SUMMARY_DONE",
+                     "data": {"summary": mock}})
+        return
+
+    user_text = build_session_summary_input(
+        reports,
+        confirmed_count=confirmed_count,
+        ignored_count=ignored_count,
+        duration_seconds=0,  # TODO: track session start_ts to compute duration
+    )
+
+    messages = [
+        {"role": "system", "content": SESSION_SUMMARY_PROMPT},
+        {"role": "user",   "content": user_text},
+    ]
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "endoscopy_session_summary", "schema": SESSION_SUMMARY_SCHEMA},
+    }
+
+    t0 = time.monotonic()
+    try:
+        completion = await client.chat.completions.create(
+            model=_llm_model_name("vision"),  # same model, text-only call
+            messages=messages,
+            response_format=response_format,
+            max_tokens=2000,
+        )
+        raw_json = completion.choices[0].message.content or "{}"
+        try:
+            summary = json.loads(raw_json)
+        except json.JSONDecodeError as je:
+            logger.error("Session summary JSON parse failed: {}", je)
+            await _send({"event": "ERROR",
+                         "data": {"message": f"Tổng hợp phiên lỗi format — {je}"}})
+            return
+
+        latency = time.monotonic() - t0
+        logger.info("Session summary generated: latency={:.2f}s findings={} risk={}",
+                    latency, len(reports),
+                    summary.get("overall_risk", "?"))
+
+        save_session_summary(video_id, summary, _llm_model_name("vision"),
+                             int(time.time() * 1000))
+        await _send({"event": "SESSION_SUMMARY_DONE",
+                     "data": {"summary": summary}})
+
+    except Exception as exc:
+        logger.error("Session summary stream error: {}", exc)
+        await _send({"event": "ERROR",
+                     "data": {"message": f"Tổng hợp phiên lỗi: {exc}"}})
+
+
+async def _stream_session_qa(websocket: WebSocket, user_text: str,
+                              sess: dict, video_id: str,
+                              ws_lock: asyncio.Lock | None = None) -> None:
+    """Free-form chat about the session. Streams the response chunk-by-chunk
+    so FE can render token-by-token (better UX than waiting for full reply).
+    Persists both user turn and full assistant turn to qa_messages.
+    """
+    async def _send(data: dict) -> None:
+        if ws_lock:
+            async with ws_lock:
+                await websocket.send_json(data)
+        else:
+            await websocket.send_json(data)
+
+    # Persist user turn BEFORE calling LLM — so the question is durably saved
+    # even if the model crashes mid-stream.
+    now_ms = int(time.time() * 1000)
+    append_qa_message(video_id, "user", user_text, now_ms)
+    await _send({"event": "SESSION_QA_USER_SAVED",
+                 "data": {"text": user_text}})
+
+    client = _get_llm_client()
+    if client is None:
+        fallback = "AI hiện không sẵn sàng. Vui lòng thử lại sau khi LLM service khôi phục."
+        append_qa_message(video_id, "assistant", fallback, int(time.time() * 1000))
+        await _send({"event": "SESSION_QA_CHUNK", "data": {"chunk": fallback}})
+        await _send({"event": "SESSION_QA_DONE", "data": {}})
+        return
+
+    summary_row = get_session_summary(video_id)
+    summary = summary_row["summary"] if summary_row else None
+    reports = get_lesion_reports_for_session(video_id)
+    history = get_qa_history(video_id)
+    # `history` already includes the user turn we just persisted. Drop the
+    # last entry from the context (it's the same `user_text` we'll append
+    # as the current turn inside build_session_qa_messages).
+    history = history[:-1] if history else []
+
+    messages = build_session_qa_messages(summary, reports, history, user_text)
+
+    full_response = ""
+    t0 = time.monotonic()
+    try:
+        # Streaming chunks — FE renders token-by-token for a chatbot feel.
+        stream = await client.chat.completions.create(
+            model=_llm_model_name("vision"),
+            messages=messages,
+            stream=True,
+            max_tokens=1000,
+        )
+        async for ev in stream:
+            delta = ev.choices[0].delta.content if ev.choices else None
+            if delta:
+                full_response += delta
+                await _send({"event": "SESSION_QA_CHUNK", "data": {"chunk": delta}})
+
+        latency = time.monotonic() - t0
+        logger.info("Session Q&A done: latency={:.2f}s chars={}", latency, len(full_response))
+        append_qa_message(video_id, "assistant", full_response, int(time.time() * 1000))
+        await _send({"event": "SESSION_QA_DONE", "data": {}})
+
+    except Exception as exc:
+        logger.error("Session Q&A error: {}", exc)
+        # Even on error, persist whatever we got so the conversation isn't half-lost.
+        if full_response:
+            append_qa_message(video_id, "assistant", full_response, int(time.time() * 1000))
+        await _send({"event": "ERROR",
+                     "data": {"message": f"Chat lỗi: {exc}"}})
+
+
+def _mock_session_summary(reports: list[dict], confirmed: int, ignored: int) -> dict:
+    """Fallback summary when LLM unavailable. Aggregates raw data without
+    interpretation — gives FE something to render in dev environments without
+    Ollama running."""
+    # Group reports by severity for priority_findings ordering
+    sev_order = {"cao": 0, "trung bình": 1, "thấp": 2}
+    sorted_reports = sorted(
+        reports,
+        key=lambda r: sev_order.get(r.get("severity", "thấp"), 3),
+    )
+    priority = [
+        {
+            "frame_index": r["frame_index"],
+            "severity": r.get("severity", "thấp"),
+            "primary_dx": r.get("report", {}).get("conclusion", {}).get("primary_dx", "?"),
+            "rationale": "(mock — LLM offline)",
+        }
+        for r in sorted_reports[:5]
+    ]
+    return {
+        "overview": {
+            "total_findings": len(reports),
+            "duration_seconds": 0,
+            "confirmed_count": confirmed,
+            "ignored_count": ignored,
+        },
+        "priority_findings": priority,
+        "patterns": ["(mock — không có pattern analysis offline)"],
+        "checklist": [{"category": "tai_kham", "action": "Tái khám khi LLM hoạt động lại để tổng hợp đầy đủ"}],
+        "overall_risk": sorted_reports[0].get("severity", "thấp") if sorted_reports else "thấp",
+    }
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
