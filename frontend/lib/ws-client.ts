@@ -79,6 +79,7 @@ export type ServerEvent =
   | { event: "SESSION_QA_USER_SAVED"; data: { text: string } }
   | { event: "SESSION_QA_CHUNK";      data: { chunk: string } }
   | { event: "SESSION_QA_DONE";       data: Record<string, never> }
+  | { event: "SESSION_QA_REPLAY";     data: { messages: { role: "user" | "assistant"; content: string; ts: number }[] } }
   | { event: "ERROR";                 data: { message: string } };
 
 // ── Outbound action types (client → server) ───────────────────────────────────

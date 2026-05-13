@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import {
+  API_BASE,
   EndoscopyWsClient,
   uploadVideo,
   connectLiveStream,
@@ -155,10 +156,10 @@ interface AnalysisContextType {
   reportFalsePositive: () => void;
   /** Phase D — re-run YOLO on paused frame at lower conf (default 0.4). */
   recheck: (conf?: number) => void;
-  /** Phase B — send a chat question for the current session. Appends user
-   *  turn locally for instant feedback; server's reply streams in via
-   *  SESSION_QA_CHUNK events. */
-  sendSessionQA: (text: string) => void;
+  /** Phase B — send a chat question. Uses WS streaming when available,
+   *  HTTP fallback when WS closed (e.g. browsing /report page). Optional
+   *  `sessionId` targets a specific session — default is currentSessionId. */
+  sendSessionQA: (text: string, sessionId?: string) => void;
   setIsPlaying: (v: boolean) => void;
   addDetection: (d: Detection) => void;
   removeDetection: (timestamp: number) => void;
@@ -427,6 +428,17 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
         updateCurrentSession((sess) => ({ ...sess, qaStreaming: false }));
         break;
       }
+      case "SESSION_QA_REPLAY": {
+        // Reconnect recovery — server sends full saved chat history once.
+        updateCurrentSession((sess) => ({
+          ...sess,
+          qaMessages: evt.data.messages.map((m) => ({
+            role: m.role, content: m.content, ts: m.ts,
+          })),
+          qaStreaming: false,
+        }));
+        break;
+      }
       case "ERROR":
         if (evt.data.message?.includes("Session not found")) {
           console.warn("[WS] session expired (likely backend restart) — resetting state");
@@ -648,22 +660,67 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     wsRef.current.send({ action: "ACTION_RECHECK", payload: { conf } });
   }, []);
 
-  // Phase B — chatbot send. Appends user turn to local state immediately so
-  // the UI doesn't feel laggy waiting for SESSION_QA_USER_SAVED ack. Reply
-  // streams in via SESSION_QA_CHUNK case which manages assistant turn.
-  const sendSessionQA = useCallback((text: string) => {
+  // Phase B — chatbot send. Two paths:
+  //   - Live WS path (during/just-after session): action ACTION_SESSION_QA;
+  //     reply streams in via SESSION_QA_CHUNK case.
+  //   - HTTP path (from /report page where WS has long closed): POST to
+  //     /session/{videoId}/qa, wait for the full reply, append both turns
+  //     locally. Server still persists the conversation to qa_messages so
+  //     the next page open sees the same history.
+  const sendSessionQA = useCallback((text: string, sessionId?: string) => {
     const t = text.trim();
-    if (!t || !wsRef.current) return;
-    updateCurrentSession((sess) => ({
-      ...sess,
-      qaStreaming: true,
-      qaMessages: [
-        ...(sess.qaMessages ?? []),
-        { role: "user", content: t, ts: Date.now() },
-      ],
-    }));
-    wsRef.current.send({ action: "ACTION_SESSION_QA", payload: { text: t } });
-  }, [updateCurrentSession]);
+    if (!t) return;
+
+    // Resolve target session — explicit param wins, else currentSessionId.
+    // /report passes the session id explicitly since user may be browsing
+    // an older session whose id no longer matches currentSessionId.
+    const targetId = sessionId ?? currentSessionId;
+    if (!targetId) return;
+
+    // Helper: append a message to the target session (not necessarily current).
+    const appendToTarget = (msg: QaMessage, streaming = true) => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === targetId
+            ? { ...s, qaStreaming: streaming, qaMessages: [...(s.qaMessages ?? []), msg] }
+            : s,
+        ),
+      );
+    };
+
+    // Optimistic local append.
+    appendToTarget({ role: "user", content: t, ts: Date.now() }, true);
+
+    // Prefer live WS for the currently-active session (streams tokens).
+    if (wsRef.current && targetId === currentSessionId) {
+      wsRef.current.send({ action: "ACTION_SESSION_QA", payload: { text: t } });
+      return;
+    }
+
+    // HTTP fallback — used at /report (no WS) or when chatting about a
+    // session that isn't currently active.
+    const sess = sessions.find((s) => s.id === targetId);
+    const vid = sess?.videoId;
+    if (!vid) {
+      appendToTarget({ role: "assistant", content: "Không thể kết nối phiên — thiếu video id.", ts: Date.now() }, false);
+      return;
+    }
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/session/${vid}/qa`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: t }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as { reply: string };
+        appendToTarget({ role: "assistant", content: data.reply, ts: Date.now() }, false);
+      } catch (err) {
+        appendToTarget({ role: "assistant", content: `Lỗi gọi AI: ${String(err)}`, ts: Date.now() }, false);
+      }
+    })();
+  }, [sessions, currentSessionId]);
 
   const setIsPlaying = useCallback((v: boolean) => {
     if (!v) {

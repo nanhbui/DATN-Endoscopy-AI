@@ -925,58 +925,26 @@ export default function Workspace() {
 
         {/* ── Session Report Modal (replaces the small EOS dialog) ── */}
         {pipelineState === 'EOS_SUMMARY' && (
-          <MuiDialog
-            open
-            maxWidth="md"
-            fullWidth
+          <SessionReportModal
+            detections={detections}
             onClose={() => {
               stopListening();
               setTranscriptLog([]);
               if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
               resetPipeline();
             }}
-            slotProps={{ paper: { sx: { borderRadius: '20px', overflow: 'hidden', height: '85vh' } } }}
-          >
-            <MuiDialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <Box sx={{ flex: 1, minHeight: 0 }}>
-                <SessionSummaryPanel
-                  summary={currentSession?.summary}
-                  qaMessages={currentSession?.qaMessages ?? []}
-                  qaStreaming={currentSession?.qaStreaming ?? false}
-                  onSendQA={sendSessionQA}
-                  onClose={() => {
-                    stopListening();
-                    setTranscriptLog([]);
-                    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
-                    resetPipeline();
-                  }}
-                />
-              </Box>
-              {/* Action footer — keeps the original navigation affordances. */}
-              <Box sx={{ display: 'flex', gap: 1, p: 2, borderTop: '1px solid #E2EAE8', backgroundColor: '#F8FAFB' }}>
-                <MuiButton
-                  variant="outlined" fullWidth
-                  onClick={() => {
-                    stopListening();
-                    setTranscriptLog([]);
-                    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
-                    resetPipeline();
-                  }}
-                  sx={{ borderRadius: '10px', textTransform: 'none', fontWeight: 700 }}
-                >
-                  Phân tích lại
-                </MuiButton>
-                <MuiButton
-                  variant="contained" fullWidth
-                  disabled={isNavigating}
-                  onClick={() => { setIsNavigating(true); router.push('/report'); }}
-                  sx={{ borderRadius: '10px', textTransform: 'none', fontWeight: 700, backgroundColor: '#006064', '&:hover': { backgroundColor: '#004D40' } }}
-                >
-                  {isNavigating ? 'Đang chuyển…' : 'Xem báo cáo đầy đủ'}
-                </MuiButton>
-              </Box>
-            </MuiDialogContent>
-          </MuiDialog>
+            onRestart={() => {
+              stopListening();
+              setTranscriptLog([]);
+              if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
+              resetPipeline();
+            }}
+            onGoReport={() => {
+              setIsNavigating(true);
+              router.push('/report');
+            }}
+            isNavigating={isNavigating}
+          />
         )}
 
         <Grid container spacing={3}>
