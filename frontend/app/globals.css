@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+/* Project design tokens (ported from new-theme/endoscopy/shared/tokens.css).
+   Loaded after Tailwind so :root vars are usable everywhere via var(--token). */
+@import "./tokens.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -122,10 +125,16 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
-    font-family: var(--font-inter), "Inter", system-ui, sans-serif;
+    @apply text-foreground;
+    /* Background lives on the design-token --bg-app so the whole app picks
+       up the cool teal-tinted neutral from new-theme/tokens.css. */
+    background: var(--bg-app);
+    color: var(--neutral-800);
+    font-family: var(--font-inter), "Inter", "Inter Vietnamese", system-ui, sans-serif;
+    line-height: var(--lh-snug);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
   html {
     @apply font-sans;
