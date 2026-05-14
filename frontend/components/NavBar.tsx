@@ -11,15 +11,16 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  Microscope, Gauge, ScanLine, ScrollText, Activity, Settings, BookOpen,
+  Microscope, Gauge, ScanLine, ScrollText, BarChart3, Settings,
 } from 'lucide-react';
 
 const navItems = [
   { href: '/',          label: 'Dashboard', icon: Gauge },
   { href: '/workspace', label: 'Workspace', icon: ScanLine },
   { href: '/report',    label: 'Báo cáo',   icon: ScrollText },
-  { href: '/train',     label: 'Train',     icon: Activity },
-  { href: '/docs',      label: 'Tài liệu',  icon: BookOpen },
+  // Replaces the empty /train placeholder — /analytics wires SQLite aggregates
+  // (KPIs + charts + false-positive review) into a single dashboard page.
+  { href: '/analytics', label: 'Thống kê',  icon: BarChart3 },
 ];
 
 export default function NavBar() {
