@@ -176,29 +176,44 @@ _DOT_FILE = _DOT_DIR / "endoscopy_pipeline.dot"
 
 def _generate_pipeline_dot() -> None:
     """Build the canonical file-source pipeline, dump its DOT topology, then destroy it.
-    The topology is static (independent of video), so we only need to do this once."""
+    The topology is static (independent of video), so we only need to do this once.
+
+    Kept in sync with pipeline_controller._pipeline_worker (commit `realtime sync
+    pipeline + UX polish`):
+      - sync=true on appsink so it paces to wall-clock (fixes the old
+        "48 frames then EOS" race where decoder raced ahead of Python)
+      - max-buffers=2 drop=true so realtime-lag never exceeds ~2 frames
+      - queue WITHOUT leaky (back-pressures decoder when YOLO is busy)
+      - explicit videoconvert before queue matches the worker layout
+
+    The worker overwrites this DOT file with the real per-session pipeline
+    once a session starts, so this representative graph only matters before
+    the first session.
+    """
     try:
         import gi
         gi.require_version("Gst", "1.0")
         from gi.repository import Gst
         Gst.init(None)
 
-        # Representative pipeline string (file source, CPU decoder)
+        # Representative pipeline string (file source, CPU h264 path).
+        # Matches the .mp4 branch of _pipeline_worker line 362-364 + the
+        # _SINK_TAIL definition at line 311.
         pipeline_str = (
             "filesrc location=/dev/null"
             " ! qtdemux"
             " ! h264parse"
             " ! avdec_h264"
             " ! videoconvert"
-            " ! queue max-size-buffers=4 leaky=downstream"
-            " ! appsink name=sink sync=false"
+            " ! queue max-size-buffers=4 max-size-time=0 max-size-bytes=0"
+            " ! appsink name=sink sync=true max-buffers=2 drop=true"
         )
         pipe = Gst.parse_launch(pipeline_str)
         _DOT_DIR.mkdir(parents=True, exist_ok=True)
         dot_data = Gst.debug_bin_to_dot_data(pipe, Gst.DebugGraphDetails.ALL)
         _DOT_FILE.write_text(dot_data)
         pipe.set_state(Gst.State.NULL)
-        logger.info("Pipeline DOT graph written → {}", _DOT_FILE)
+        logger.info("Pipeline DOT graph written → {} (representative file-source)", _DOT_FILE)
     except Exception as exc:
         logger.warning("Could not generate pipeline DOT: {}", exc)
 
