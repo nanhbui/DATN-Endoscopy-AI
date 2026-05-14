@@ -1,132 +1,151 @@
 'use client';
 
+/**
+ * NavBar — ported from new-theme/endoscopy/shared/app.jsx.
+ *
+ * Plain <header> instead of MUI AppBar so the design matches new-theme's
+ * inline-style approach. Tokens come from tokens.css (var(--token)).
+ * Sticky, 64px tall, translucent white with backdrop-blur.
+ */
+
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, Gauge, Microscope, ScanLine, ScrollText } from 'lucide-react';
-
-import AppBar from '@mui/material/AppBar';
-import Toolbar from '@mui/material/Toolbar';
-import Box from '@mui/material/Box';
-import MuiButton from '@mui/material/Button';
-import Container from '@mui/material/Container';
-import Typography from '@mui/material/Typography';
+import {
+  Gauge, ScanLine, ScrollText, Activity, Settings, BookOpen,
+} from 'lucide-react';
 
 const navItems = [
-  { href: '/', label: 'Dashboard', icon: Gauge },
+  { href: '/',          label: 'Dashboard', icon: Gauge },
   { href: '/workspace', label: 'Workspace', icon: ScanLine },
-  { href: '/report', label: 'Báo cáo', icon: ScrollText },
-  { href: '/train', label: 'Train', icon: Activity },
+  { href: '/report',    label: 'Báo cáo',   icon: ScrollText },
+  { href: '/train',     label: 'Train',     icon: Activity },
+  { href: '/docs',      label: 'Tài liệu',  icon: BookOpen },
 ];
 
 export default function NavBar() {
   const pathname = usePathname();
 
   return (
-    <AppBar
-      position="sticky"
-      elevation={0}
-      sx={{
-        backgroundColor: 'rgba(255,255,255,0.95)',
-        backdropFilter: 'blur(16px)',
-        borderBottom: '1px solid #E2EAE8',
-        zIndex: 50,
+    <header
+      style={{
+        position: 'sticky', top: 0, zIndex: 50,
+        background: 'rgba(255,255,255,0.92)',
+        backdropFilter: 'saturate(180%) blur(10px)',
+        WebkitBackdropFilter: 'saturate(180%) blur(10px)',
+        borderBottom: '1px solid var(--border-subtle)',
       }}
     >
-      <Container maxWidth="lg">
-        <Toolbar disableGutters sx={{ gap: 2, justifyContent: 'space-between', py: 0.5 }}>
-          {/* Logo */}
-          <Box
-            component={Link}
-            href="/"
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1.5,
-              textDecoration: 'none',
-              color: 'inherit',
+      <div
+        style={{
+          maxWidth: 1440,
+          margin: '0 auto',
+          height: 64,
+          padding: '0 24px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 24,
+        }}
+      >
+        {/* Brand — gradient mark + 2-line text */}
+        <Link
+          href="/"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            marginRight: 8, textDecoration: 'none', color: 'inherit',
+          }}
+        >
+          <span
+            style={{
+              width: 36, height: 36, borderRadius: 10,
+              background: 'var(--hero-gradient)',
+              color: 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 4px 10px rgba(0,96,100,0.25)',
+              flexShrink: 0,
             }}
           >
-            <Box
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: 38,
-                height: 38,
-                borderRadius: '10px',
-                background: 'linear-gradient(135deg, #006064 0%, #00838F 100%)',
-                color: '#fff',
-                flexShrink: 0,
-                boxShadow: '0 4px 12px rgba(0,96,100,0.3)',
-              }}
-            >
-              <Microscope size={20} />
-            </Box>
-            <Box sx={{ lineHeight: 1 }}>
-              <Typography
-                variant="caption"
-                sx={{ fontWeight: 700, color: 'primary.main', letterSpacing: '0.06em', textTransform: 'uppercase', display: 'block' }}
-              >
-                AI Endoscopy Suite
-              </Typography>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', lineHeight: 1.2 }}>
-                Smart Endoscopy
-              </Typography>
-            </Box>
-          </Box>
+            {/* Scope icon — matches new-theme inline svg */}
+            <svg width={20} height={20} viewBox="0 0 20 20" fill="none" aria-hidden>
+              <circle cx={10} cy={10} r={8.5} stroke="currentColor" strokeWidth={1.5} />
+              <circle cx={10} cy={10} r={3.5} fill="currentColor" />
+              <path
+                d="M10 1.5 V4.5 M10 15.5 V18.5 M1.5 10 H4.5 M15.5 10 H18.5"
+                stroke="currentColor" strokeWidth={1.5} strokeLinecap="round"
+              />
+            </svg>
+          </span>
+          <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
+            <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-0.01em', color: 'var(--neutral-800)' }}>
+              AI Endoscopy Suite
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--neutral-500)', letterSpacing: '0.04em' }}>
+              HỆ THỐNG PHÂN TÍCH NỘI SOI
+            </span>
+          </span>
+        </Link>
 
-          {/* Nav Items */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, overflowX: 'auto' }}>
-            {navItems.map(({ href, label, icon: Icon }) => {
-              const isActive = pathname === href;
-              return (
-                <MuiButton
-                  key={href}
-                  component={Link}
-                  href={href}
-                  size="small"
-                  sx={{
-                    textTransform: 'none',
-                    fontSize: '0.875rem',
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 0.75,
-                    borderRadius: '8px',
-                    px: 1.75,
-                    py: 0.875,
-                    minWidth: 0,
-                    transition: 'all 0.2s ease',
-                    color: isActive ? 'primary.main' : 'text.secondary',
-                    backgroundColor: isActive ? 'rgba(0,96,100,0.08)' : 'transparent',
-                    position: 'relative',
-                    '&::after': isActive
-                      ? {
-                          content: '""',
-                          position: 'absolute',
-                          bottom: -1,
-                          left: '50%',
-                          transform: 'translateX(-50%)',
-                          width: '60%',
-                          height: 2,
-                          borderRadius: '2px 2px 0 0',
-                          backgroundColor: 'primary.main',
-                        }
-                      : {},
-                    '&:hover': {
-                      backgroundColor: 'rgba(0,96,100,0.06)',
-                      color: 'primary.dark',
-                    },
-                  }}
-                  startIcon={<Icon size={15} />}
-                >
-                  {label}
-                </MuiButton>
-              );
-            })}
-          </Box>
-        </Toolbar>
-      </Container>
-    </AppBar>
+        {/* Nav links */}
+        <nav style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
+          {navItems.map(({ href, label, icon: Icon }) => {
+            const isActive = pathname === href;
+            return (
+              <Link
+                key={href}
+                href={href}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '8px 12px', borderRadius: 8,
+                  fontSize: 13, fontWeight: 550,
+                  textDecoration: 'none',
+                  color: isActive ? 'var(--teal-700)' : 'var(--neutral-600)',
+                  background: isActive ? 'var(--teal-50)' : 'transparent',
+                  transition: 'background var(--dur-fast) var(--ease-out), color var(--dur-fast)',
+                }}
+              >
+                <Icon size={16} />
+                <span>{label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Right cluster — settings + avatar. Backend status pill will land
+            here once PR #25 (AiHealthBadge) merges. */}
+        <div
+          style={{
+            marginLeft: 'auto',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}
+        >
+          <button
+            aria-label="Cài đặt"
+            type="button"
+            style={{
+              width: 36, height: 36, borderRadius: 8,
+              background: 'transparent', border: '1px solid var(--border-subtle)',
+              color: 'var(--neutral-600)', cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'background var(--dur-fast)',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--neutral-100)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <Settings size={16} />
+          </button>
+          <div
+            aria-label="Bác sĩ"
+            title="Bác sĩ"
+            style={{
+              width: 36, height: 36, borderRadius: '50%',
+              background: 'var(--teal-600)', color: 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 12, fontWeight: 700, letterSpacing: '0.05em',
+            }}
+          >
+            BS
+          </div>
+        </div>
+      </div>
+    </header>
   );
 }
