@@ -629,6 +629,11 @@ def _pipeline_worker(video_path_str: str, model_path_str: str, conf: float,
                             result_q.put({"event": "RECHECK_EMPTY", "data": {"conf": _rc_conf}})
                             print(f"[Worker] RECHECK no detections at conf={_rc_conf:.2f}", flush=True)
                     except Exception as _rc_exc:
+                        # Always emit a terminal event so FE leaves the "rechecking"
+                        # affordance — without this the UI sits paused forever on
+                        # silent inference failures (Copilot review finding).
+                        result_q.put({"event": "RECHECK_EMPTY",
+                                      "data": {"conf": _rc_conf, "error": str(_rc_exc)}})
                         print(f"[Worker] RECHECK failed: {_rc_exc}", flush=True)
                     # Stay paused — user reviews the new detection (or empty result) and decides.
 

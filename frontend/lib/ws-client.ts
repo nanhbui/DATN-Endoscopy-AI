@@ -49,7 +49,7 @@ export type ServerEvent =
   | { event: "LLM_CHUNK";          data: { chunk: string } }
   | { event: "LLM_DONE";           data: Record<string, never> }
   | { event: "LESION_REPORT_DONE"; data: { frame_index: number; report: LesionReport } }
-  | { event: "RECHECK_EMPTY";      data: { conf: number } }
+  | { event: "RECHECK_EMPTY";      data: { conf: number; error?: string } }
   | { event: "VIDEO_FINISHED";     data: { detections: DetectionData[] } }
   | { event: "ERROR";              data: { message: string } };
 

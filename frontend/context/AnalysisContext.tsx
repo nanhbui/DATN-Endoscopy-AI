@@ -350,6 +350,17 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
         }));
         break;
       }
+      case "RECHECK_EMPTY": {
+        // Recheck pass returned no new detection (or the worker threw). User
+        // stays on the original paused detection — log so devs can correlate
+        // with backend output; no state mutation needed.
+        if (evt.data.error) {
+          console.warn(`[WS] RECHECK failed at conf=${evt.data.conf}: ${evt.data.error}`);
+        } else {
+          console.info(`[WS] RECHECK at conf=${evt.data.conf} found nothing`);
+        }
+        break;
+      }
       case "VIDEO_FINISHED": {
         setPipelineState("EOS_SUMMARY");
         setIsConnected(false);

@@ -604,18 +604,21 @@ function DetectionBar({
 
           <Tooltip title="Kiểm tra lại — AI dò thêm với ngưỡng thấp hơn" arrow>
             <IconButton size="small" onClick={onRecheck}
+              aria-label="Kiểm tra lại với ngưỡng thấp hơn"
               sx={{ color: 'rgba(216,180,254,0.85)', border: '1px solid rgba(168,85,247,0.3)', borderRadius: '7px', p: 0.6, '&:hover': { backgroundColor: 'rgba(168,85,247,0.15)', borderColor: '#A855F7' } }}>
               <RefreshCw size={14} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Báo sai — đánh dấu false positive (persist)" arrow>
             <IconButton size="small" onClick={onReportFalsePositive}
+              aria-label="Báo false positive (lưu lâu dài)"
               sx={{ color: 'rgba(252,165,165,0.9)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: '7px', p: 0.6, '&:hover': { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#EF4444' } }}>
               <Flag size={14} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Bỏ qua — chỉ session hiện tại" arrow>
             <IconButton size="small" onClick={onIgnore}
+              aria-label="Bỏ qua detection trong session hiện tại"
               sx={{ color: 'rgba(252,211,77,0.85)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '7px', p: 0.6, '&:hover': { backgroundColor: 'rgba(245,158,11,0.12)', borderColor: '#F59E0B' } }}>
               <X size={14} />
             </IconButton>
@@ -1428,18 +1431,21 @@ export default function Workspace() {
                         <Box sx={{ display: 'flex', justifyContent: 'center', gap: 0.75 }}>
                           <Tooltip title="Kiểm tra lại — AI dò với ngưỡng thấp hơn" arrow>
                             <IconButton size="small" onClick={() => recheck(0.4)}
+                              aria-label="Kiểm tra lại với ngưỡng thấp hơn"
                               sx={{ color: '#7C3AED', border: '1px solid rgba(124,58,237,0.35)', borderRadius: '8px', p: 0.7, '&:hover': { backgroundColor: 'rgba(124,58,237,0.08)', borderColor: '#7C3AED' } }}>
                               <RefreshCw size={15} />
                             </IconButton>
                           </Tooltip>
                           <Tooltip title="Báo sai — lưu vào DB, các phiên sau auto-skip vùng này" arrow>
                             <IconButton size="small" onClick={reportFalsePositive}
+                              aria-label="Báo false positive (lưu lâu dài)"
                               sx={{ color: '#DC2626', border: '1px solid rgba(220,38,38,0.35)', borderRadius: '8px', p: 0.7, '&:hover': { backgroundColor: 'rgba(220,38,38,0.08)', borderColor: '#DC2626' } }}>
                               <Flag size={15} />
                             </IconButton>
                           </Tooltip>
                           <Tooltip title="Bỏ qua — chỉ session hiện tại" arrow>
                             <IconButton size="small" onClick={ignoreDetection}
+                              aria-label="Bỏ qua detection trong session hiện tại"
                               sx={{ color: '#92400E', border: '1px solid rgba(146,64,14,0.3)', borderRadius: '8px', p: 0.7, '&:hover': { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: '#D97706' } }}>
                               <X size={15} />
                             </IconButton>
