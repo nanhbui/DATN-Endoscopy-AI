@@ -280,6 +280,47 @@ async def health():
     return {"status": "ok", "active_sessions": len(_sessions)}
 
 
+# Phase C5 — Ollama health probe. Returns {ok, model, latency_ms, error?}.
+# Frontend pings this on workspace mount + before each LLM-heavy action to
+# surface "AI offline" banners early instead of waiting 90s for timeout.
+# Tries a 1-token completion so we exercise the actual inference path, not
+# just the HTTP /api/tags endpoint (which can return 200 while the model
+# runner is stuck).
+@app.get("/health/ollama")
+async def health_ollama():
+    client = _get_llm_client()
+    if client is None:
+        return {"ok": False, "error": "no_client", "backend": LLM_BACKEND}
+    t0 = time.monotonic()
+    try:
+        # Tiny round-trip: 1-token completion against a 1-word prompt. Cheap
+        # and avoids loading vision tower / running through the long system
+        # prompt. ~100-300ms when healthy.
+        await asyncio.wait_for(
+            client.chat.completions.create(
+                model=_llm_model_name("vision"),
+                messages=[{"role": "user", "content": "ok"}],
+                max_tokens=1,
+            ),
+            timeout=10,  # short bound — anything slower is unhealthy
+        )
+        return {
+            "ok": True,
+            "model": _llm_model_name("vision"),
+            "backend": LLM_BACKEND,
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+        }
+    except Exception as exc:
+        code, friendly = _classify_llm_error(exc)
+        return {
+            "ok": False,
+            "code": code,
+            "error": friendly,
+            "backend": LLM_BACKEND,
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+        }
+
+
 @app.get("/pipeline/metrics")
 async def get_pipeline_metrics():
     """Parse GstShark CSV logs and return per-element performance metrics."""

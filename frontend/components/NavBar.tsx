@@ -10,6 +10,7 @@ import Box from '@mui/material/Box';
 import MuiButton from '@mui/material/Button';
 import Container from '@mui/material/Container';
 import Typography from '@mui/material/Typography';
+import { AiHealthBadge } from '@/components/ai-health-badge';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: Gauge },
@@ -75,8 +76,9 @@ export default function NavBar() {
             </Box>
           </Box>
 
-          {/* Nav Items */}
+          {/* Nav Items + AI health pill (Phase C5) */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, overflowX: 'auto' }}>
+            <Box sx={{ mr: 1 }}><AiHealthBadge /></Box>
             {navItems.map(({ href, label, icon: Icon }) => {
               const isActive = pathname === href;
               return (
