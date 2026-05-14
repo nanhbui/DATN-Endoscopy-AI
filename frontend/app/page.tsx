@@ -108,6 +108,7 @@ export default function Home() {
       <Hero stats={heroStats} hasSessions={sessions.length > 0} />
 
       <div
+        className="dash-inner"
         style={{
           maxWidth: 1440, margin: '0 auto',
           padding: '40px 24px 80px',
@@ -123,6 +124,20 @@ export default function Home() {
             conceptual flow which isn't useful for inspecting the live pipeline. */}
         <GstPipelineGraph />
       </div>
+
+      {/* Mobile padding overrides — keeps the hero from looking absurdly
+          tall on a phone, and trims the content gutter so cards aren't
+          half-cropped at the edges. */}
+      <style jsx global>{`
+        @media (max-width: 720px) {
+          .hero-inner { padding: 36px 16px 28px !important; }
+          .dash-inner { padding: 24px 16px 56px !important; gap: 20px !important; }
+        }
+        @media (max-width: 520px) {
+          .hero-inner { padding: 28px 14px 24px !important; }
+          .dash-inner { padding: 20px 12px 48px !important; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -163,6 +178,7 @@ function Hero({
       />
 
       <div
+        className="hero-inner"
         style={{
           position: 'relative',
           maxWidth: 1440, margin: '0 auto',
@@ -227,11 +243,14 @@ function Hero({
             </div>
           </div>
 
-          {/* Hero stats — 3 KPIs in a glass card */}
-          <div style={{ flex: '1 1 360px', maxWidth: 460 }}>
+          {/* Hero stats — 3 KPIs in a glass card. Auto-fit lets the tiles
+              stack into a single column on mobile when there's no horizontal room. */}
+          <div style={{ flex: '1 1 280px', maxWidth: 460, width: '100%' }}>
             <div
               style={{
-                display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1,
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                gap: 1,
                 background: 'rgba(255,255,255,0.12)',
                 borderRadius: 'var(--r-xl)',
                 overflow: 'hidden',
@@ -501,7 +520,8 @@ function SessionsPreview({
             </div>
           </div>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.bgSubtle }}>
                 {['Phiên', 'Tên', 'Thời gian', 'Phát hiện', 'Nguồn', ''].map((h) => (
@@ -577,6 +597,7 @@ function SessionsPreview({
               ))}
             </tbody>
           </table>
+          </div>
         )}
 
         {hasMore && (

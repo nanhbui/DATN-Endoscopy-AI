@@ -41,10 +41,10 @@ export default function NavBar() {
           maxWidth: 1440,
           margin: '0 auto',
           height: 64,
-          padding: '0 24px',
+          padding: '0 16px',
           display: 'flex',
           alignItems: 'center',
-          gap: 24,
+          gap: 12,
         }}
       >
         {/* Brand — gradient mark + 2-line text */}
@@ -71,47 +71,62 @@ export default function NavBar() {
                 tile from new-theme so the chrome still feels updated. */}
             <Microscope size={22} strokeWidth={2.2} />
           </span>
-          <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
-            <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-0.01em', color: 'var(--neutral-800)' }}>
+          {/* Brand text hides on very narrow screens (<420px) so the logo
+              + nav links still fit horizontally without overflow. */}
+          <span
+            className="brand-text"
+            style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}
+          >
+            <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-0.01em', color: 'var(--neutral-800)', whiteSpace: 'nowrap' }}>
               AI Endoscopy Suite
             </span>
-            <span style={{ fontSize: 11, color: 'var(--neutral-500)', letterSpacing: '0.04em' }}>
+            <span style={{ fontSize: 11, color: 'var(--neutral-500)', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
               HỆ THỐNG PHÂN TÍCH NỘI SOI
             </span>
           </span>
         </Link>
 
-        {/* Nav links */}
-        <nav style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
+        {/* Nav links — horizontal scroll when the viewport can't fit all
+            items rather than wrapping into a 2nd line that breaks the header. */}
+        <nav
+          className="nav-links"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 4, marginLeft: 4,
+            flex: 1, minWidth: 0,
+            overflowX: 'auto', overflowY: 'hidden',
+            scrollbarWidth: 'none',
+          }}
+        >
           {navItems.map(({ href, label, icon: Icon }) => {
             const isActive = pathname === href;
             return (
               <Link
                 key={href}
                 href={href}
+                className="nav-link"
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6,
                   padding: '8px 12px', borderRadius: 8,
                   fontSize: 13, fontWeight: 550,
-                  textDecoration: 'none',
+                  textDecoration: 'none', flexShrink: 0,
                   color: isActive ? 'var(--teal-700)' : 'var(--neutral-600)',
                   background: isActive ? 'var(--teal-50)' : 'transparent',
                   transition: 'background var(--dur-fast) var(--ease-out), color var(--dur-fast)',
                 }}
               >
                 <Icon size={16} />
-                <span>{label}</span>
+                <span className="nav-link-label">{label}</span>
               </Link>
             );
           })}
         </nav>
 
-        {/* Right cluster — settings + avatar. Backend status pill will land
-            here once PR #25 (AiHealthBadge) merges. */}
+        {/* Right cluster — settings + avatar. Collapses on narrow screens so
+            the nav links keep priority. */}
         <div
+          className="nav-right"
           style={{
-            marginLeft: 'auto',
-            display: 'flex', alignItems: 'center', gap: 10,
+            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
           }}
         >
           <button
@@ -143,6 +158,30 @@ export default function NavBar() {
           </div>
         </div>
       </div>
+
+      {/* Responsive rules — keep the chrome readable on phones without a
+          dedicated mobile component. Three breakpoints, smallest first:
+          - <960px: drop the brand subtitle and the Settings icon
+          - <720px: drop the nav link labels (icons only), shrink the brand
+          - <520px: drop the brand wordmark + avatar; only icons remain
+          Also hides the horizontal scrollbar on the nav strip. */}
+      <style jsx global>{`
+        .nav-links { -ms-overflow-style: none; }
+        .nav-links::-webkit-scrollbar { display: none; }
+
+        @media (max-width: 960px) {
+          .brand-text > span:last-child { display: none !important; }
+        }
+        @media (max-width: 720px) {
+          .nav-link-label { display: none !important; }
+          .nav-link { padding: 8px 10px !important; }
+          .brand-text > span:first-child { font-size: 13px !important; }
+        }
+        @media (max-width: 520px) {
+          .brand-text { display: none !important; }
+          .nav-right > [aria-label='Cài đặt'] { display: none !important; }
+        }
+      `}</style>
     </header>
   );
 }
