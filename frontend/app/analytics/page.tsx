@@ -12,8 +12,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
-  Activity, AlertTriangle, BarChart3, Database, FileBarChart,
-  MessageSquare, RefreshCw, ScanLine, Sparkles,
+  Activity, AlertTriangle, BarChart3, FileBarChart, Flag,
+  MessageSquare, RefreshCw, ScanLine, Trash2,
 } from 'lucide-react';
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -38,6 +38,14 @@ interface RecentSession {
   last_at: number;
   overall_risk: string | null;
 }
+interface FalsePositive {
+  id: number;
+  label: string;
+  bbox: [number, number, number, number];
+  reported_at: number;
+  session_id_source: string;
+  frame_b64?: string;  // cropped thumbnail, may be null for rows reported before v2
+}
 interface AnalyticsOverview {
   kpis: AnalyticsKpis;
   severity_dist: Record<string, number>;
@@ -58,15 +66,24 @@ const SEV_COLORS: Record<string, string> = {
 
 export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsOverview | null>(null);
+  const [fps, setFps] = useState<FalsePositive[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true); setErr(null);
     try {
-      const res = await fetch(`${API_BASE}/analytics/overview`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setData(await res.json() as AnalyticsOverview);
+      // Two parallel fetches — both cheap, no point sequencing.
+      const [overviewRes, fpRes] = await Promise.all([
+        fetch(`${API_BASE}/analytics/overview`),
+        fetch(`${API_BASE}/analytics/false-positives`),
+      ]);
+      if (!overviewRes.ok) throw new Error(`HTTP ${overviewRes.status}`);
+      setData(await overviewRes.json() as AnalyticsOverview);
+      if (fpRes.ok) {
+        const fpData = await fpRes.json() as { items: FalsePositive[] };
+        setFps(fpData.items);
+      }
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -74,6 +91,22 @@ export default function AnalyticsPage() {
     }
   };
   useEffect(() => { load(); }, []);
+
+  const deleteFp = async (id: number) => {
+    if (!confirm('Xoá entry này khỏi danh sách "case sai"?\nModel sẽ KHÔNG còn auto-skip vùng đó nữa.')) return;
+    try {
+      const res = await fetch(`${API_BASE}/analytics/false-positives/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Optimistic local removal + KPI decrement so UI feels instant.
+      setFps((prev) => prev?.filter((f) => f.id !== id) ?? null);
+      setData((prev) => prev ? {
+        ...prev,
+        kpis: { ...prev.kpis, false_positives: Math.max(0, prev.kpis.false_positives - 1) },
+      } : prev);
+    } catch (e) {
+      alert(`Xoá thất bại: ${e}`);
+    }
+  };
 
   return (
     <Box sx={{ minHeight: 'calc(100vh - 130px)', py: 4, px: { xs: 2, lg: 4 }, backgroundColor: '#FAFCFB' }}>
@@ -146,6 +179,13 @@ export default function AnalyticsPage() {
               </PanelCard>
               <PanelCard title="Phiên gần nhất">
                 <RecentTable rows={data.recent_sessions} />
+              </PanelCard>
+            </Box>
+
+            {/* False positives management — full-width panel below the charts */}
+            <Box sx={{ mb: 2.5 }}>
+              <PanelCard title={`Quản lý case sai (${fps?.length ?? 0})`}>
+                <FalsePositivesTable items={fps} onDelete={deleteFp} />
               </PanelCard>
             </Box>
 
@@ -302,6 +342,116 @@ function BarList({
           />
         </Box>
       ))}
+    </Box>
+  );
+}
+
+// ── False positives table — list + delete ──────────────────────────────────
+
+function FalsePositivesTable({
+  items, onDelete,
+}: { items: FalsePositive[] | null; onDelete: (id: number) => void }) {
+  if (!items) return (
+    <Typography sx={{ fontSize: '0.78rem', color: 'text.secondary', textAlign: 'center', py: 3 }}>
+      Đang tải…
+    </Typography>
+  );
+  if (items.length === 0) return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.75, py: 3, color: 'text.disabled' }}>
+      <Flag size={24} />
+      <Typography sx={{ fontSize: '0.82rem', textAlign: 'center', maxWidth: 380 }}>
+        Chưa có "case sai" nào. Bác sĩ bấm <strong>Báo sai</strong> trong workspace để
+        đánh dấu detection nhầm — vùng đó sẽ auto-skip ở các phiên sau.
+      </Typography>
+    </Box>
+  );
+
+  const fmt = (ms: number) => new Date(ms).toLocaleString('vi-VN', {
+    day: '2-digit', month: '2-digit', year: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+  // Bbox xyxy → readable WxH @ position (rounded for display only).
+  const fmtBbox = (b: [number, number, number, number]) =>
+    `${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])} px @ (${Math.round(b[0])}, ${Math.round(b[1])})`;
+
+  return (
+    <Box component="table" sx={{
+      width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem',
+      '& th': { textAlign: 'left', fontWeight: 700, fontSize: '0.7rem',
+                color: 'text.secondary', textTransform: 'uppercase',
+                letterSpacing: '0.05em', pb: 0.75, borderBottom: '1px solid #E2EAE8' },
+      '& td': { py: 1, borderBottom: '1px solid #F0F4F3', verticalAlign: 'middle' },
+      '& tr:last-child td': { borderBottom: 'none' },
+    }}>
+      <thead>
+        <tr>
+          <th style={{ width: 40 }}>#</th>
+          <th style={{ width: 92 }}>Ảnh</th>
+          <th>Label</th>
+          <th>Vùng bbox</th>
+          <th>Báo từ session</th>
+          <th>Thời gian</th>
+          <th style={{ width: 80, textAlign: 'right' }}>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((fp) => (
+          <tr key={fp.id}>
+            <td style={{ fontFamily: 'ui-monospace, monospace', color: '#6B7280' }}>{fp.id}</td>
+            <td>
+              {fp.frame_b64 ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={`data:image/jpeg;base64,${fp.frame_b64}`}
+                  alt={fp.label}
+                  style={{
+                    width: 80, height: 56, objectFit: 'cover',
+                    borderRadius: 4, border: '1px solid #E2EAE8', backgroundColor: '#0D1117',
+                  }}
+                />
+              ) : (
+                <Box sx={{
+                  width: 80, height: 56, borderRadius: '4px',
+                  border: '1px dashed #C8D8D6', display: 'flex',
+                  alignItems: 'center', justifyContent: 'center',
+                  color: 'text.disabled', fontSize: '0.62rem', textAlign: 'center', px: 0.5,
+                }}>
+                  Không có ảnh
+                </Box>
+              )}
+            </td>
+            <td>
+              <Box component="span" sx={{
+                display: 'inline-block', px: 0.75, py: 0.2, borderRadius: '4px',
+                backgroundColor: 'rgba(220,38,38,0.08)', color: '#991B1B',
+                fontSize: '0.74rem', fontWeight: 700,
+              }}>{fp.label}</Box>
+            </td>
+            <td style={{ fontFamily: 'ui-monospace, monospace', color: '#4B5563', fontSize: '0.72rem' }}>
+              {fmtBbox(fp.bbox)}
+            </td>
+            <td style={{ fontFamily: 'ui-monospace, monospace', color: '#6B7280', fontSize: '0.72rem' }}>
+              {fp.session_id_source?.slice(0, 8) ?? '—'}
+            </td>
+            <td style={{ color: '#6B7280' }}>{fmt(fp.reported_at)}</td>
+            <td style={{ textAlign: 'right' }}>
+              <MuiButton
+                onClick={() => onDelete(fp.id)}
+                size="small"
+                startIcon={<Trash2 size={12} />}
+                sx={{
+                  textTransform: 'none', fontSize: '0.72rem', fontWeight: 700,
+                  color: '#DC2626', borderRadius: '6px', minWidth: 0,
+                  px: 1, py: 0.25,
+                  '&:hover': { backgroundColor: 'rgba(220,38,38,0.06)' },
+                }}
+              >
+                Xoá
+              </MuiButton>
+            </td>
+          </tr>
+        ))}
+      </tbody>
     </Box>
   );
 }

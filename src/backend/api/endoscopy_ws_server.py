@@ -424,6 +424,57 @@ async def analytics_overview():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# Phase E.2 — false-positive management on the analytics page.
+# Doctor can review every FP the system is auto-skipping and delete entries
+# they reported by mistake. Delete = the model resumes flagging that region.
+@app.get("/analytics/false-positives")
+async def list_false_positives():
+    from db import _connect
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """SELECT id, label, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+                          reported_at, session_id_source, frame_b64
+                   FROM false_positives
+                   ORDER BY reported_at DESC"""
+            ).fetchall()
+        return {
+            "items": [
+                {
+                    "id": r[0], "label": r[1],
+                    "bbox": [r[2], r[3], r[4], r[5]],
+                    "reported_at": r[6], "session_id_source": r[7],
+                    "frame_b64": r[8],  # nullable — older rows pre-v2 won't have it
+                }
+                for r in rows
+            ],
+        }
+    except Exception as exc:
+        logger.error("list_false_positives failed: {}", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/analytics/false-positives/{fp_id}")
+async def delete_false_positive(fp_id: int):
+    """Delete one FP entry. Active sessions still have it cached in
+    sess['false_positives'] until they reconnect — that's acceptable for the
+    "I changed my mind" use case."""
+    from db import _connect
+    try:
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM false_positives WHERE id = ?", (fp_id,))
+            removed = cur.rowcount
+        if removed == 0:
+            raise HTTPException(status_code=404, detail="FP entry not found")
+        logger.info("Deleted false_positive id={}", fp_id)
+        return {"ok": True, "deleted": removed}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("delete_false_positive failed: {}", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/pipeline/metrics")
 async def get_pipeline_metrics():
     """Parse GstShark CSV logs and return per-element performance metrics."""
@@ -936,11 +987,16 @@ async def ws_analysis(websocket: WebSocket, video_id: str):
                     lesion = pending.get("lesion", {})
                     label = lesion.get("label", "")
                     bbox = list(lesion.get("bbox", []))
+                    # Save the cropped thumbnail too so the analytics page can
+                    # show what was reported (frame_b64 is the small viewport
+                    # crop created by the worker — already JPEG-encoded).
+                    thumb = pending.get("frame_b64")
                     if label and len(bbox) >= 4:
                         ok = save_false_positive(
                             label=label, bbox=bbox,
                             session_id_source=video_id,
                             reported_at_ms=int(time.time() * 1000),
+                            frame_b64=thumb,
                         )
                         if ok:
                             sess["false_positives"].append({"label": label, "bbox": bbox})
