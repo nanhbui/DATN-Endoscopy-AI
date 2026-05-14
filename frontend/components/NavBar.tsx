@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, Gauge, Microscope, ScanLine, ScrollText } from 'lucide-react';
+import { BarChart3, Gauge, Microscope, ScanLine, ScrollText } from 'lucide-react';
 
 import AppBar from '@mui/material/AppBar';
 import Toolbar from '@mui/material/Toolbar';
@@ -16,7 +16,7 @@ const navItems = [
   { href: '/', label: 'Dashboard', icon: Gauge },
   { href: '/workspace', label: 'Workspace', icon: ScanLine },
   { href: '/report', label: 'Báo cáo', icon: ScrollText },
-  { href: '/train', label: 'Train', icon: Activity },
+  { href: '/analytics', label: 'Thống kê', icon: BarChart3 },
 ];
 
 export default function NavBar() {
