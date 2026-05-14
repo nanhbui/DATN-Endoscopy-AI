@@ -144,11 +144,27 @@ def db_path() -> Path:
 
 # ── False-positives (Phase D) ────────────────────────────────────────────────
 
+_FRAME_W = 1920.0
+_FRAME_H = 1080.0
+_MAX_FP_AREA_RATIO = 0.7  # reject near-full-frame bboxes — they cause IoU>=0.6
+                          # matches against unrelated future detections (Copilot
+                          # high-severity finding, see PR review).
+
+
 def save_false_positive(label: str, bbox: list[float], session_id_source: str,
                         reported_at_ms: int) -> bool:
     """Persist one false-positive entry. bbox is [x1,y1,x2,y2] normalized to
     1920×1080 (matches DETECTION_FOUND payload). Returns True on success."""
     if len(bbox) < 4:
+        return False
+    w = max(0.0, float(bbox[2]) - float(bbox[0]))
+    h = max(0.0, float(bbox[3]) - float(bbox[1]))
+    area_ratio = (w * h) / (_FRAME_W * _FRAME_H)
+    if area_ratio <= 0.0 or area_ratio > _MAX_FP_AREA_RATIO:
+        logger.warning(
+            "save_false_positive rejected: bbox area ratio {:.2%} exceeds {:.0%} cap "
+            "(label={}, bbox={})", area_ratio, _MAX_FP_AREA_RATIO, label, bbox,
+        )
         return False
     try:
         with _connect() as conn:

@@ -661,7 +661,10 @@ async def ws_analysis(websocket: WebSocket, video_id: str):
                 # model + last frame, so we forward a RECHECK:<conf> command
                 # and let it emit new DETECTION_FOUND events directly.
                 payload = msg.get("payload") or {}
-                conf = float(payload.get("conf", 0.4))
+                try:
+                    conf = float(payload.get("conf", 0.4))
+                except (TypeError, ValueError):
+                    conf = 0.4
                 # Clamp to a sane band — too low (<0.2) floods false positives,
                 # too high (>0.6) won't surface anything the first pass missed.
                 conf = max(0.2, min(0.6, conf))
