@@ -1542,11 +1542,16 @@ async def _stream_follow_up(websocket: WebSocket, text: str, sess: dict, ws_lock
         {"role": "user", "content": text[:500]},
     ]
 
+    # Route through the backend factory — LLM_MODEL_FOLLOWUP is "gpt-4o-mini"
+    # by default (legacy OpenAI path); on Ollama that name doesn't exist and
+    # the request 404s. _llm_model_name("followup") returns OLLAMA_MODEL when
+    # backend is Ollama, LLM_MODEL_FOLLOWUP otherwise.
+    _model = _llm_model_name("followup")
     t0 = time.monotonic()
     full_response = ""
     try:
         stream = await client.chat.completions.create(
-            model=LLM_MODEL_FOLLOWUP,
+            model=_model,
             messages=messages,
             stream=True,
             max_tokens=350,
@@ -1558,7 +1563,7 @@ async def _stream_follow_up(websocket: WebSocket, text: str, sess: dict, ws_lock
                 await _send({"event": "LLM_CHUNK", "data": {"chunk": delta}})
         await _send({"event": "LLM_DONE", "data": {}})
         latency = time.monotonic() - t0
-        logger.info("LLM follow-up: model={} latency={:.2f}s", LLM_MODEL_FOLLOWUP, latency)
+        logger.info("LLM follow-up: model={} latency={:.2f}s", _model, latency)
     except Exception as exc:
         logger.error("LLM follow-up error: {}", exc)
         await _send({"event": "ERROR", "data": {"message": f"LLM error: {exc}"}})
