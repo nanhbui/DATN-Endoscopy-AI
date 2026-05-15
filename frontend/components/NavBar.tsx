@@ -13,6 +13,7 @@ import { usePathname } from 'next/navigation';
 import {
   Microscope, Gauge, ScanLine, ScrollText, BarChart3, Settings,
 } from 'lucide-react';
+import { AiHealthBadge } from '@/components/ai-health-badge';
 
 const navItems = [
   { href: '/',          label: 'Dashboard', icon: Gauge },
@@ -133,6 +134,10 @@ export default function NavBar() {
             display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
           }}
         >
+          {/* AI health pill (Phase C5 / PR #25) — polls /health/ollama every
+              30s; click to refresh. Lives in the right cluster so doctors
+              spot AI status without scrolling. */}
+          <AiHealthBadge />
           <button
             aria-label="Cài đặt"
             type="button"
