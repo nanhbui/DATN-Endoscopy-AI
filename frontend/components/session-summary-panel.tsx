@@ -292,7 +292,10 @@ function ChatTab({ messages, streaming, onSend }: ChatTabProps) {
                   textTransform: 'uppercase',
                   letterSpacing: '0.04em',
                   // First heading doesn't need the top margin since it'd be the bubble's first child.
-                  '&:first-child': { marginTop: 0 },
+                  // :first-of-type instead of :first-child to satisfy
+                  // Emotion / Next.js SSR — :first-child is unsafe across
+                  // server/client boundaries (different sibling order).
+                  '&:first-of-type': { marginTop: 0 },
                 },
                 '& blockquote': { borderLeft: '3px solid #00897B', backgroundColor: 'rgba(0,137,123,0.06)', padding: '4px 8px', margin: '4px 0', borderRadius: '0 6px 6px 0', '& p': { margin: 0 } },
                 '& a':        { color: '#0277BD', textDecoration: 'underline' },

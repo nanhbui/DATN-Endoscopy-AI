@@ -1,277 +1,629 @@
 'use client';
 
+/**
+ * Dashboard / route — ported from new-theme/dashboard.jsx.
+ *
+ * Drops MUI for this page; everything is inline styles + tokens so the
+ * visual identity matches new-theme/endoscopy faithfully. Real data
+ * comes from useAnalysis() (sessions list + isPlaying); KPI numbers
+ * fall back to derived counts when the /analytics endpoint is missing.
+ */
+
 import Link from 'next/link';
-import { motion as framMotion } from 'framer-motion';
+import { useEffect, useState } from 'react';
 import {
-  Activity,
-  ArrowRight,
-  Brain,
-  ClipboardList,
-  MessageSquareText,
-  Play,
-  ScanSearch,
-  UploadCloud,
+  Activity, ArrowRight, Brain, ChevronRight, FileBarChart, Mic,
+  MessageSquareText, Play, Radio, ScanSearch, Sparkles, UploadCloud, Zap,
 } from 'lucide-react';
-import { PipelineGraphSection } from '@/components/pipeline-graph-section';
-
 import { useAnalysis } from '@/context/AnalysisContext';
+import { API_BASE } from '@/lib/ws-client';
+import { PipelineGraphSection as GstPipelineGraph } from '@/components/pipeline-graph-section';
 
-import Box from '@mui/material/Box';
-import Container from '@mui/material/Container';
-import Typography from '@mui/material/Typography';
-import Grid from '@mui/material/Grid';
-import MuiButton from '@mui/material/Button';
+// Hardcoded copies of the most-visible token values. Used directly in inline
+// styles where var(--token) resolution failed during initial migration (the
+// Tailwind v4 PostCSS pipeline sometimes drops nested @import). Keeps the
+// page rendering even if tokens.css briefly doesn't load.
+const HERO_GRADIENT = 'linear-gradient(135deg, #003A3D 0%, #006064 45%, #00838F 100%)';
+const C = {
+  teal600:   '#006064',
+  teal700:   '#004D50',
+  teal100:   '#C6E0E1',
+  neutral800: '#222B2A',
+  neutral700: '#36403F',
+  neutral600: '#4F5C5B',
+  neutral500: '#6E7C7B',
+  neutral400: '#9BA9A8',
+  neutral300: '#C9D4D3',
+  neutral200: '#E2EAE9',
+  neutral100: '#EEF2F2',
+  neutral50:  '#F7FAFA',
+  borderSubtle: '#E2EAE9',
+  bgSubtle:  '#F1F5F5',
+  bgPaper:   '#FFFFFF',
+  bgApp:     '#F7FAFA',
+  shadowSm:  '0 1px 2px rgba(13,27,42,0.04), 0 1px 1px rgba(13,27,42,0.03)',
+} as const;
 
-const workflowFeatures = [
+// ── KPI overview type — mirrors /analytics/overview when available ──────────
+// We tolerate the endpoint being missing (Phase E hasn't landed yet on this
+// branch) and fall back to whatever we can derive from sessions[].
+interface OverviewResp {
+  kpis?: {
+    sessions?: number;
+    findings?: number;
+    summaries?: number;
+    false_positives?: number;
+  };
+}
+
+const SEV_COLOR: Record<string, string> = {
+  'thấp':       'var(--sev-ulcer)',
+  'trung bình': 'var(--sev-inflam)',
+  'cao':        'var(--sev-cancer)',
+};
+
+const SOURCE_LABEL: Record<string, { txt: string; icon: React.ReactNode }> = {
+  upload:  { txt: 'Tải lên',    icon: <UploadCloud size={11} /> },
+  live:    { txt: 'Trực tiếp',  icon: <Radio       size={11} /> },
+  library: { txt: 'Thư viện',   icon: <FileBarChart size={11} /> },
+};
+
+// ── Page ────────────────────────────────────────────────────────────────────
+
+export default function Home() {
+  const { sessions, isPlaying } = useAnalysis();
+  const [overview, setOverview] = useState<OverviewResp['kpis'] | null>(null);
+
+  // Pull analytics overview to back the hero stats; if endpoint not yet
+  // deployed (404), we derive counts from local sessions list.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/analytics/overview`);
+        if (res.ok) {
+          const data: OverviewResp = await res.json();
+          if (data.kpis) setOverview(data.kpis);
+        }
+      } catch {
+        // network down — derived stats kick in below
+      }
+    })();
+  }, []);
+
+  // Derived from sessions[] — used when /analytics isn't available.
+  const totalFindings = sessions.reduce((s, sess) => s + sess.detections.length, 0);
+  const heroStats = {
+    sessions: overview?.sessions ?? sessions.length,
+    findings: overview?.findings ?? totalFindings,
+    // Accuracy is static — model performance metric, not derivable per-session.
+    accuracy: '91.4%',
+  };
+
+  const recentSessions = sessions.slice(0, 6);
+  const currentSession = sessions[0];
+
+  return (
+    <div className="theme-fade-up" style={{ minHeight: 'calc(100vh - 64px)' }}>
+      {/* ── Hero ─────────────────────────────────────────────────────────── */}
+      <Hero stats={heroStats} hasSessions={sessions.length > 0} />
+
+      <div
+        className="dash-inner"
+        style={{
+          maxWidth: 1440, margin: '0 auto',
+          padding: '40px 24px 80px',
+          display: 'flex', flexDirection: 'column', gap: 32,
+        }}
+      >
+        <FeatureRow />
+        {currentSession && <CurrentSessionPanel session={currentSession} isPlaying={isPlaying} />}
+        <SessionsPreview rows={recentSessions} hasMore={sessions.length > recentSessions.length} />
+
+        {/* Real GStreamer DOT graph from backend — restored from the original
+            page. The earlier rewrite replaced it with a static 7-node
+            conceptual flow which isn't useful for inspecting the live pipeline. */}
+        <GstPipelineGraph />
+      </div>
+
+      {/* Mobile padding overrides — keeps the hero from looking absurdly
+          tall on a phone, and trims the content gutter so cards aren't
+          half-cropped at the edges. */}
+      <style jsx global>{`
+        @media (max-width: 720px) {
+          .hero-inner { padding: 36px 16px 28px !important; }
+          .dash-inner { padding: 24px 16px 56px !important; gap: 20px !important; }
+        }
+        @media (max-width: 520px) {
+          .hero-inner { padding: 28px 14px 24px !important; }
+          .dash-inner { padding: 20px 12px 48px !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ── Hero ────────────────────────────────────────────────────────────────────
+
+function Hero({
+  stats, hasSessions,
+}: {
+  stats: { sessions: number; findings: number; accuracy: string };
+  hasSessions: boolean;
+}) {
+  return (
+    <div
+      style={{
+        background: HERO_GRADIENT,
+        color: 'white',
+        position: 'relative',
+        overflow: 'hidden',
+      }}
+    >
+      {/* Decorative radial glows */}
+      <div
+        style={{
+          position: 'absolute', top: -200, right: -200, width: 600, height: 600,
+          borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(255,255,255,0.12), transparent 60%)',
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute', bottom: -100, left: '40%', width: 400, height: 400,
+          borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(0,131,143,0.4), transparent 60%)',
+          pointerEvents: 'none',
+        }}
+      />
+
+      <div
+        className="hero-inner"
+        style={{
+          position: 'relative',
+          maxWidth: 1440, margin: '0 auto',
+          padding: '64px 24px 56px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 48, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 480px', maxWidth: 720 }}>
+            <div
+              style={{
+                fontSize: 11, fontWeight: 700, letterSpacing: '0.18em',
+                opacity: 0.7, marginBottom: 16,
+              }}
+            >
+              HỆ THỐNG PHÂN TÍCH NỘI SOI THÔNG MINH
+            </div>
+            <h1 className="theme-h-display" style={{ margin: 0, color: 'white' }}>
+              Phát hiện tổn thương real-time,
+              <br />
+              <span style={{ color: C.teal100 }}>
+                điều khiển hoàn toàn bằng giọng nói.
+              </span>
+            </h1>
+            <p
+              style={{
+                marginTop: 20, fontSize: 16, lineHeight: 1.6,
+                color: 'rgba(255,255,255,0.78)', maxWidth: 580,
+              }}
+            >
+              YOLO + Whisper + LLM phối hợp dừng video tại điểm phát hiện, đọc nhãn
+              lâm sàng, chờ bác sĩ xác nhận bằng lời. Không cần rời tay khỏi endoscope.
+            </p>
+
+            <div style={{ marginTop: 28, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Link
+                href="/workspace"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 8,
+                  background: 'white', color: C.teal700,
+                  padding: '12px 20px', fontSize: 14, fontWeight: 600,
+                  borderRadius: 'var(--r-md)', textDecoration: 'none',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.20)',
+                  transition: 'transform var(--dur-fast)',
+                }}
+              >
+                <Play size={14} /> Bắt đầu phiên mới
+              </Link>
+              {hasSessions && (
+                <Link
+                  href="/report"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 8,
+                    color: 'white', borderColor: 'rgba(255,255,255,0.32)',
+                    border: '1px solid rgba(255,255,255,0.32)',
+                    padding: '12px 20px', fontSize: 14,
+                    borderRadius: 'var(--r-md)', textDecoration: 'none',
+                  }}
+                >
+                  Xem báo cáo gần đây <ArrowRight size={14} />
+                </Link>
+              )}
+            </div>
+          </div>
+
+          {/* Hero stats — 3 KPIs in a glass card. Auto-fit lets the tiles
+              stack into a single column on mobile when there's no horizontal room. */}
+          <div style={{ flex: '1 1 280px', maxWidth: 460, width: '100%' }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                gap: 1,
+                background: 'rgba(255,255,255,0.12)',
+                borderRadius: 'var(--r-xl)',
+                overflow: 'hidden',
+                backdropFilter: 'blur(8px)',
+                border: '1px solid rgba(255,255,255,0.16)',
+              }}
+            >
+              {[
+                { v: stats.sessions.toLocaleString(),  l: 'Phiên đã phân tích',  sub: sessionCountCopy(stats.sessions) },
+                { v: stats.findings.toLocaleString(), l: 'Tổn thương phát hiện', sub: 'theo dõi toàn bộ' },
+                { v: stats.accuracy,                  l: 'Độ chính xác mô hình', sub: 'YOLO v8 · 30 fps' },
+              ].map((s) => (
+                <div key={s.l} style={{ padding: '24px 20px', background: 'rgba(0,40,42,0.35)' }}>
+                  <div
+                    style={{
+                      fontSize: 28, fontWeight: 700, letterSpacing: '-0.02em',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  >
+                    {s.v}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 4 }}>
+                    {s.l}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.teal100, marginTop: 8 }}>
+                    {s.sub}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// "có N phiên" copy fragment for the sub-line under hero stat #1.
+function sessionCountCopy(n: number) {
+  return n === 0 ? 'chưa có phiên nào' : `${n.toLocaleString()} phiên đã ghi`;
+}
+
+// ── Feature row — 4 cards summarising workflow capabilities ─────────────────
+
+const FEATURES = [
   {
     title: 'Phân tích Real-time',
-    description: 'Xử lý video tốc độ cao, nhận diện tổn thương ngay lập tức với độ chính xác cao.',
-    icon: Activity,
-    color: '#0277BD',
-    bg: 'rgba(2,119,189,0.08)',
+    body:  'Pipeline GStreamer + YOLOv8 + StrongSORT dừng video chính xác tại frame có tổn thương.',
+    icon:  Activity, color: 'var(--st-analyzed)',
   },
   {
     title: 'Smart Ignore & Memory',
-    description: 'Tự động ghi nhớ các điểm đã bỏ qua, không cảnh báo lặp lại trong cùng phiên.',
-    icon: Brain,
-    color: '#006064',
-    bg: 'rgba(0,96,100,0.08)',
+    body:  'Backend SQLite ghi nhớ false-positive cross-session; vùng đã báo sai sẽ tự skip ở phiên sau.',
+    icon:  Brain, color: C.teal600,
   },
   {
-    title: 'Trợ lý Y khoa LLM',
-    description: 'Tự động sinh phân loại y khoa và checklist hành động phù hợp cho bác sĩ lâm sàng.',
-    icon: MessageSquareText,
-    color: '#2E7D32',
-    bg: 'rgba(46,125,50,0.08)',
+    title: 'Trợ lý LLM y khoa',
+    body:  'Qwen2.5-VL 7B sinh báo cáo 3 phần (Kỹ thuật / Mô tả / Kết luận) theo schema JSON.',
+    icon:  Sparkles, color: 'var(--st-processing)',
+  },
+  {
+    title: 'Voice-first',
+    body:  'Whisper-VI + intent classifier — bác sĩ điều khiển bằng "bỏ qua / giải thích / xác nhận".',
+    icon:  Mic, color: 'var(--st-confirmed)',
   },
 ];
 
-const MotionBox = framMotion(Box);
-
-export default function Home() {
-  const { isPlaying, detections } = useAnalysis();
-
+function FeatureRow() {
   return (
-    <Box sx={{ minHeight: 'calc(100vh - 130px)', py: 5, px: { xs: 2, sm: 3, lg: 4 }, backgroundColor: 'background.default' }}>
-      <Container maxWidth="lg" sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-
-        {/* ── Hero ── */}
-        <MotionBox
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          sx={{
-            borderRadius: '20px',
-            overflow: 'hidden',
-            position: 'relative',
-            background: 'linear-gradient(135deg, #004044 0%, #006064 45%, #00838F 100%)',
-            p: { xs: 3, lg: 5 },
-            color: '#fff',
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+        gap: 16,
+      }}
+    >
+      {FEATURES.map((f) => (
+        <div
+          key={f.title}
+          className="theme-fade-up"
+          style={{
+            background: C.bgPaper,
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--r-xl)',
+            boxShadow: C.shadowSm,
+            padding: 24,
           }}
         >
-          <Box sx={{ position: 'absolute', top: -60, right: -60, width: 280, height: 280, borderRadius: '50%', background: 'rgba(255,255,255,0.04)', pointerEvents: 'none' }} />
-          <Box sx={{ position: 'absolute', bottom: -80, right: 80, width: 200, height: 200, borderRadius: '50%', background: 'rgba(255,255,255,0.03)', pointerEvents: 'none' }} />
-
-          <Box sx={{ position: 'relative', zIndex: 1 }}>
-            <Typography
-              variant="h1"
-              sx={{ fontSize: { xs: '1.75rem', md: '2.5rem' }, fontWeight: 800, mb: 1.5, lineHeight: 1.25, color: '#fff' }}
-            >
-              Hệ thống Phân tích Nội soi Thông minh
-            </Typography>
-            <Typography
-              sx={{ mb: 4, maxWidth: 640, lineHeight: 1.7, color: 'rgba(255,255,255,0.78)', fontSize: '0.9375rem' }}
-            >
-              GStreamer · YOLO · Whisper · LLM — phát hiện tổn thương theo thời gian thực, hands-free, voice-first.
-            </Typography>
-
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
-              <MuiButton
-                component={Link}
-                href="/workspace"
-                variant="contained"
-                size="large"
-                startIcon={<UploadCloud size={18} />}
-                sx={{
-                  backgroundColor: '#fff',
-                  color: '#006064',
-                  fontWeight: 700,
-                  borderRadius: '10px',
-                  px: 3,
-                  boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
-                  '&:hover': { backgroundColor: '#f0fafa', boxShadow: '0 6px 24px rgba(0,0,0,0.3)' },
-                }}
-              >
-                Tải video & Bắt đầu
-              </MuiButton>
-              {detections.length > 0 && (
-                <MuiButton
-                  component={Link}
-                  href="/report"
-                  variant="outlined"
-                  size="large"
-                  endIcon={<ArrowRight size={16} />}
-                  sx={{
-                    borderColor: 'rgba(255,255,255,0.45)',
-                    color: '#fff',
-                    borderRadius: '10px',
-                    px: 3,
-                    '&:hover': { borderColor: '#fff', backgroundColor: 'rgba(255,255,255,0.1)' },
-                  }}
-                >
-                  Xem báo cáo ({detections.length} phát hiện)
-                </MuiButton>
-              )}
-            </Box>
-          </Box>
-        </MotionBox>
-
-        {/* ── Session summary (shown only when detections exist) ── */}
-        {detections.length > 0 ? (
-          <Box
-            sx={{
-              backgroundColor: 'background.paper',
-              borderRadius: '16px',
-              border: '1px solid #E2EAE8',
-              boxShadow: '0 2px 12px rgba(13,27,42,0.06)',
-              p: 3,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 2,
-              flexWrap: 'wrap',
+          <div
+            style={{
+              width: 40, height: 40, borderRadius: 10,
+              background: `${f.color}14`, color: f.color,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              marginBottom: 14,
             }}
           >
-            <Box>
-              <Typography variant="subtitle1" sx={{ fontWeight: 700, color: 'text.primary' }}>
-                Phiên hiện tại
-              </Typography>
-              <Typography variant="body2" color="textSecondary">
-                {detections.length} tổn thương đã phát hiện · {isPlaying ? 'Đang phân tích' : 'Đã dừng'}
-              </Typography>
-            </Box>
-            <MuiButton
-              component={Link}
-              href="/report"
-              variant="contained"
-              endIcon={<ArrowRight size={16} />}
-              sx={{ borderRadius: '10px', fontWeight: 700 }}
-            >
-              Xem báo cáo
-            </MuiButton>
-          </Box>
-        ) : (
-          <Box
-            sx={{
-              backgroundColor: 'background.paper',
-              borderRadius: '16px',
-              border: '1px dashed #C8D8D6',
-              p: 4,
-              textAlign: 'center',
-            }}
-          >
-            <Play size={32} color="#C8D8D6" style={{ marginBottom: 12 }} />
-            <Typography variant="subtitle2" sx={{ color: 'text.secondary', mb: 0.5 }}>
-              Chưa có phiên phân tích nào
-            </Typography>
-            <Typography variant="caption" color="textDisabled">
-              Tải video lên ở Workspace để bắt đầu
-            </Typography>
-          </Box>
-        )}
-
-        {/* ── Features ── */}
-        <Box>
-          <Typography variant="h3" sx={{ fontSize: '1.25rem', fontWeight: 700, mb: 2.5, color: 'text.primary' }}>
-            Luồng tính năng
-          </Typography>
-          <Grid container spacing={2.5}>
-            {workflowFeatures.map((feature, idx) => (
-              <Grid size={{ xs: 12, md: 4 }} key={feature.title}>
-                <MotionBox
-                  initial={{ opacity: 0, y: 14 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.35, delay: idx * 0.08 }}
-                  sx={{
-                    height: '100%',
-                    backgroundColor: 'background.paper',
-                    borderRadius: '16px',
-                    border: '1px solid #E2EAE8',
-                    boxShadow: '0 2px 12px rgba(13,27,42,0.06)',
-                    p: 3,
-                    transition: 'box-shadow 0.2s, transform 0.2s',
-                    '&:hover': { boxShadow: '0 8px 28px rgba(13,27,42,0.1)', transform: 'translateY(-2px)' },
-                  }}
-                >
-                  <Box
-                    sx={{
-                      width: 44, height: 44, borderRadius: '12px',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      backgroundColor: feature.bg, color: feature.color, mb: 2,
-                    }}
-                  >
-                    <feature.icon size={22} />
-                  </Box>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1, color: 'text.primary' }}>
-                    {feature.title}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary" sx={{ lineHeight: 1.65 }}>
-                    {feature.description}
-                  </Typography>
-                </MotionBox>
-              </Grid>
-            ))}
-          </Grid>
-        </Box>
-
-        {/* ── Detection report table ── */}
-        <Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2.5 }}>
-            <ClipboardList size={18} color="#006064" />
-            <Typography variant="h3" sx={{ fontSize: '1.25rem', fontWeight: 700, color: 'text.primary' }}>
-              Báo cáo phiên hiện tại
-            </Typography>
-          </Box>
-          <Box sx={{ backgroundColor: 'background.paper', borderRadius: '16px', border: '1px solid #E2EAE8', boxShadow: '0 2px 12px rgba(13,27,42,0.06)', overflow: 'hidden' }}>
-            {/* Table header */}
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1fr', px: 3, py: 1.5, backgroundColor: '#F8FAFB', borderBottom: '1px solid #E2EAE8' }}>
-              {['Thời điểm', 'Chẩn đoán AI', 'Độ tin cậy'].map((h) => (
-                <Typography key={h} variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', letterSpacing: '0.04em', textTransform: 'uppercase' }}>{h}</Typography>
-              ))}
-            </Box>
-
-            {detections.length === 0 ? (
-              <Box sx={{ py: 6, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5 }}>
-                <ScanSearch size={32} color="#C8D8D6" />
-                <Typography variant="body2" color="textSecondary">Chưa có phát hiện nào trong phiên này</Typography>
-                <Typography variant="caption" color="textDisabled">Tải video lên ở Workspace để bắt đầu phân tích</Typography>
-              </Box>
-            ) : (
-              <>
-                {detections.map((det, idx) => (
-                  <Box key={`row-${idx}`} sx={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1fr', px: 3, py: 1.75, alignItems: 'center', borderBottom: idx < detections.length - 1 ? '1px solid #F0F4F3' : 'none', '&:hover': { backgroundColor: '#F8FAFB' } }}>
-                    <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary', fontWeight: 500 }}>{det.timestamp.toFixed(1)}s</Typography>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <ScanSearch size={14} color="#006064" />
-                      <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>{det.label}</Typography>
-                    </Box>
-                    <Box sx={{ display: 'inline-flex', alignItems: 'center', px: 1.25, py: 0.4, borderRadius: '6px', backgroundColor: 'rgba(46,125,50,0.08)', width: 'fit-content' }}>
-                      <Typography variant="caption" sx={{ fontWeight: 700, color: '#2E7D32' }}>{(det.confidence * 100).toFixed(0)}%</Typography>
-                    </Box>
-                  </Box>
-                ))}
-                <Box sx={{ px: 3, py: 1.75, borderTop: '1px solid #E2EAE8', backgroundColor: '#F8FAFB' }}>
-                  <Typography variant="caption" color="textSecondary">{detections.length} bản ghi · phiên hiện tại</Typography>
-                </Box>
-              </>
-            )}
-          </Box>
-        </Box>
-
-        {/* ── GStreamer Pipeline Graph ── */}
-        <PipelineGraphSection />
-
-      </Container>
-    </Box>
+            <f.icon size={18} />
+          </div>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>{f.title}</div>
+          <div style={{ fontSize: 13, color: C.neutral600, lineHeight: 1.6 }}>
+            {f.body}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
+
+// ── Current session card — only shown when there's an active session ───────
+
+function CurrentSessionPanel({
+  session, isPlaying,
+}: {
+  session: ReturnType<typeof useAnalysis>['sessions'][number];
+  isPlaying: boolean;
+}) {
+  const n = session.detections.length;
+  const confirmed = session.detections.filter(
+    (d) => d.status === 'confirmed' || d.status === 'analyzed',
+  ).length;
+  const avgConf = n > 0
+    ? Math.round(session.detections.reduce((s, d) => s + d.confidence, 0) / n * 100)
+    : 0;
+
+  const startTs = new Date(session.startedAt).toLocaleTimeString('vi-VN', {
+    hour: '2-digit', minute: '2-digit',
+  });
+
+  return (
+    <div
+      style={{
+        background: C.bgPaper,
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--r-xl)',
+        boxShadow: C.shadowSm,
+        overflow: 'hidden',
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          padding: '18px 24px',
+          borderBottom: '1px solid var(--border-subtle)',
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        }}
+      >
+        <div>
+          <div className="theme-eyebrow">PHIÊN ĐANG HOẠT ĐỘNG</div>
+          <h2 className="theme-h-h2" style={{ margin: '4px 0 0' }}>
+            {session.name}
+          </h2>
+        </div>
+        <div
+          style={{
+            marginLeft: 'auto',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '6px 10px', borderRadius: 'var(--r-pill)',
+            background: isPlaying ? 'rgba(2,119,189,0.08)' : 'rgba(154,165,177,0.10)',
+            border: `1px solid ${isPlaying ? 'rgba(2,119,189,0.25)' : 'var(--border-default)'}`,
+            color: isPlaying ? 'var(--st-analyzed)' : C.neutral500,
+            fontSize: 12, fontWeight: 600,
+          }}
+        >
+          <span
+            style={{
+              width: 7, height: 7, borderRadius: '50%',
+              background: 'currentColor',
+              animation: isPlaying ? 'themePulseRing 2s var(--ease-out) infinite' : 'none',
+            }}
+          />
+          {isPlaying ? 'Đang phân tích' : 'Đã dừng'}
+        </div>
+        <Link
+          href="/workspace"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            background: C.teal600, color: 'white',
+            padding: '8px 14px', fontSize: 13, fontWeight: 550,
+            borderRadius: 'var(--r-md)', textDecoration: 'none',
+          }}
+        >
+          Mở Workspace <ArrowRight size={14} />
+        </Link>
+      </div>
+
+      {/* Stats grid */}
+      <div
+        style={{
+          display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: 1, background: C.borderSubtle,
+        }}
+      >
+        <StatCell label="Bắt đầu" value={startTs} mono />
+        <StatCell label="Phát hiện" value={String(n)} mono />
+        <StatCell label="Đã xác nhận" value={String(confirmed)} mono />
+        <StatCell
+          label="Độ tin cậy TB"
+          value={n > 0 ? `${avgConf}%` : '—'}
+          mono
+        />
+      </div>
+    </div>
+  );
+}
+
+function StatCell({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div style={{ padding: '20px 24px', background: C.bgPaper }}>
+      <div className="theme-eyebrow" style={{ fontSize: 11 }}>{label}</div>
+      <div
+        style={{
+          fontSize: 22, fontWeight: 700, marginTop: 4, letterSpacing: '-0.01em',
+          fontFamily: mono ? 'var(--font-mono)' : undefined,
+          color: C.neutral800,
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+// ── Sessions preview — list of recent sessions ─────────────────────────────
+
+function SessionsPreview({
+  rows, hasMore,
+}: {
+  rows: ReturnType<typeof useAnalysis>['sessions'];
+  hasMore: boolean;
+}) {
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 16 }}>
+        <h2 className="theme-h-h2" style={{ margin: 0 }}>Phiên gần đây</h2>
+        <Link
+          href="/report"
+          style={{
+            marginLeft: 'auto', fontSize: 13, color: C.teal600,
+            fontWeight: 550, textDecoration: 'none', display: 'inline-flex',
+            alignItems: 'center', gap: 4,
+          }}
+        >
+          Tất cả báo cáo <ArrowRight size={12} />
+        </Link>
+      </div>
+
+      <div
+        style={{
+          background: C.bgPaper,
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--r-xl)',
+          boxShadow: C.shadowSm,
+          overflow: 'hidden',
+        }}
+      >
+        {rows.length === 0 ? (
+          <div
+            style={{
+              padding: '48px 24px', textAlign: 'center',
+              color: C.neutral500,
+            }}
+          >
+            <ScanSearch size={28} style={{ marginBottom: 8, color: C.neutral300 }} />
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Chưa có phiên nào</div>
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              Tải video lên ở Workspace để bắt đầu phân tích đầu tiên.
+            </div>
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: C.bgSubtle }}>
+                {['Phiên', 'Tên', 'Thời gian', 'Phát hiện', 'Nguồn', ''].map((h) => (
+                  <th
+                    key={h}
+                    style={{
+                      textAlign: 'left', padding: '10px 16px',
+                      fontSize: 11, fontWeight: 700, letterSpacing: '0.06em',
+                      textTransform: 'uppercase', color: C.neutral500,
+                      borderBottom: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s, i) => (
+                <tr
+                  key={s.id}
+                  style={{
+                    borderBottom: i === rows.length - 1 ? 'none' : '1px solid var(--border-subtle)',
+                  }}
+                >
+                  <td style={tdStyle}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {s.id.slice(0, 12)}
+                    </span>
+                  </td>
+                  <td style={tdStyle}>
+                    <span style={{ fontWeight: 550 }}>{s.name}</span>
+                  </td>
+                  <td style={tdStyle}>
+                    <span style={{ color: C.neutral500, fontSize: 12 }}>
+                      {new Date(s.startedAt).toLocaleString('vi-VN', {
+                        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+                      })}
+                    </span>
+                  </td>
+                  <td style={tdStyle}>
+                    {s.detections.length > 0 ? (
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13 }}>
+                        {s.detections.length}
+                      </span>
+                    ) : (
+                      <span style={{ color: C.neutral400 }}>—</span>
+                    )}
+                  </td>
+                  <td style={tdStyle}>
+                    <span
+                      className="theme-chip theme-chip--ignored"
+                      style={{ background: C.bgSubtle, color: C.neutral600 }}
+                    >
+                      {SOURCE_LABEL[s.source]?.icon}
+                      {SOURCE_LABEL[s.source]?.txt ?? s.source}
+                    </span>
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>
+                    <Link
+                      href="/report"
+                      aria-label="Mở chi tiết"
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        width: 28, height: 28, borderRadius: 'var(--r-sm)',
+                        color: C.neutral500, textDecoration: 'none',
+                      }}
+                    >
+                      <ChevronRight size={14} />
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </div>
+        )}
+
+        {hasMore && (
+          <div
+            style={{
+              padding: '12px 24px',
+              borderTop: '1px solid var(--border-subtle)',
+              background: C.bgSubtle,
+              fontSize: 12, color: C.neutral500, textAlign: 'center',
+            }}
+          >
+            Hiển thị {rows.length} phiên gần nhất —{' '}
+            <Link href="/report" style={{ color: C.teal600, fontWeight: 600 }}>
+              xem tất cả
+            </Link>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const tdStyle: React.CSSProperties = {
+  padding: '14px 16px',
+  fontSize: 13,
+  color: C.neutral700,
+  verticalAlign: 'middle',
+};
+

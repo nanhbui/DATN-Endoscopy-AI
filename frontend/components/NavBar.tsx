@@ -1,134 +1,196 @@
 'use client';
 
+/**
+ * NavBar — ported from new-theme/endoscopy/shared/app.jsx.
+ *
+ * Plain <header> instead of MUI AppBar so the design matches new-theme's
+ * inline-style approach. Tokens come from tokens.css (var(--token)).
+ * Sticky, 64px tall, translucent white with backdrop-blur.
+ */
+
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { BarChart3, Gauge, Microscope, ScanLine, ScrollText } from 'lucide-react';
-
-import AppBar from '@mui/material/AppBar';
-import Toolbar from '@mui/material/Toolbar';
-import Box from '@mui/material/Box';
-import MuiButton from '@mui/material/Button';
-import Container from '@mui/material/Container';
-import Typography from '@mui/material/Typography';
+import {
+  Microscope, Gauge, ScanLine, ScrollText, BarChart3, Settings,
+} from 'lucide-react';
 import { AiHealthBadge } from '@/components/ai-health-badge';
 
 const navItems = [
-  { href: '/', label: 'Dashboard', icon: Gauge },
+  { href: '/',          label: 'Dashboard', icon: Gauge },
   { href: '/workspace', label: 'Workspace', icon: ScanLine },
-  { href: '/report', label: 'Báo cáo', icon: ScrollText },
-  { href: '/analytics', label: 'Thống kê', icon: BarChart3 },
+  { href: '/report',    label: 'Báo cáo',   icon: ScrollText },
+  // Replaces the empty /train placeholder — /analytics wires SQLite aggregates
+  // (KPIs + charts + false-positive review) into a single dashboard page.
+  { href: '/analytics', label: 'Thống kê',  icon: BarChart3 },
 ];
 
 export default function NavBar() {
   const pathname = usePathname();
 
   return (
-    <AppBar
-      position="sticky"
-      elevation={0}
-      sx={{
-        backgroundColor: 'rgba(255,255,255,0.95)',
-        backdropFilter: 'blur(16px)',
-        borderBottom: '1px solid #E2EAE8',
-        zIndex: 50,
+    <header
+      style={{
+        position: 'sticky', top: 0, zIndex: 50,
+        background: 'rgba(255,255,255,0.92)',
+        backdropFilter: 'saturate(180%) blur(10px)',
+        WebkitBackdropFilter: 'saturate(180%) blur(10px)',
+        borderBottom: '1px solid var(--border-subtle)',
       }}
     >
-      <Container maxWidth="lg">
-        <Toolbar disableGutters sx={{ gap: 2, justifyContent: 'space-between', py: 0.5 }}>
-          {/* Logo */}
-          <Box
-            component={Link}
-            href="/"
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1.5,
-              textDecoration: 'none',
-              color: 'inherit',
+      <div
+        style={{
+          maxWidth: 1440,
+          margin: '0 auto',
+          height: 64,
+          padding: '0 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+        }}
+      >
+        {/* Brand — gradient mark + 2-line text */}
+        <Link
+          href="/"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            marginRight: 8, textDecoration: 'none', color: 'inherit',
+          }}
+        >
+          <span
+            style={{
+              width: 38, height: 38, borderRadius: 10,
+              background: 'var(--hero-gradient)',
+              color: 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 4px 12px rgba(0,96,100,0.30)',
+              flexShrink: 0,
+            }}
+            aria-label="AI Endoscopy Suite logo"
+          >
+            {/* Microscope icon — original brand mark, more recognizable than
+                new-theme's scope-aperture SVG. Inset on the hero-gradient
+                tile from new-theme so the chrome still feels updated. */}
+            <Microscope size={22} strokeWidth={2.2} />
+          </span>
+          {/* Brand text hides on very narrow screens (<420px) so the logo
+              + nav links still fit horizontally without overflow. */}
+          <span
+            className="brand-text"
+            style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}
+          >
+            <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-0.01em', color: 'var(--neutral-800)', whiteSpace: 'nowrap' }}>
+              AI Endoscopy Suite
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--neutral-500)', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+              HỆ THỐNG PHÂN TÍCH NỘI SOI
+            </span>
+          </span>
+        </Link>
+
+        {/* Nav links — horizontal scroll when the viewport can't fit all
+            items rather than wrapping into a 2nd line that breaks the header.
+            justifyContent: center balances the bar visually so links sit in
+            the gap between the brand (left) and the action cluster (right)
+            instead of crowding the left side. */}
+        <nav
+          className="nav-links"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            gap: 4,
+            flex: 1, minWidth: 0,
+            overflowX: 'auto', overflowY: 'hidden',
+            scrollbarWidth: 'none',
+          }}
+        >
+          {navItems.map(({ href, label, icon: Icon }) => {
+            const isActive = pathname === href;
+            return (
+              <Link
+                key={href}
+                href={href}
+                className="nav-link"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '8px 12px', borderRadius: 8,
+                  fontSize: 13, fontWeight: 550,
+                  textDecoration: 'none', flexShrink: 0,
+                  color: isActive ? 'var(--teal-700)' : 'var(--neutral-600)',
+                  background: isActive ? 'var(--teal-50)' : 'transparent',
+                  transition: 'background var(--dur-fast) var(--ease-out), color var(--dur-fast)',
+                }}
+              >
+                <Icon size={16} />
+                <span className="nav-link-label">{label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Right cluster — settings + avatar. Collapses on narrow screens so
+            the nav links keep priority. */}
+        <div
+          className="nav-right"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+          }}
+        >
+          {/* AI health pill (Phase C5 / PR #25) — polls /health/ollama every
+              30s; click to refresh. Lives in the right cluster so doctors
+              spot AI status without scrolling. */}
+          <AiHealthBadge />
+          <button
+            aria-label="Cài đặt"
+            type="button"
+            style={{
+              width: 36, height: 36, borderRadius: 8,
+              background: 'transparent', border: '1px solid var(--border-subtle)',
+              color: 'var(--neutral-600)', cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'background var(--dur-fast)',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--neutral-100)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <Settings size={16} />
+          </button>
+          <div
+            aria-label="Bác sĩ"
+            title="Bác sĩ"
+            style={{
+              width: 36, height: 36, borderRadius: '50%',
+              background: 'var(--teal-600)', color: 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 12, fontWeight: 700, letterSpacing: '0.05em',
             }}
           >
-            <Box
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: 38,
-                height: 38,
-                borderRadius: '10px',
-                background: 'linear-gradient(135deg, #006064 0%, #00838F 100%)',
-                color: '#fff',
-                flexShrink: 0,
-                boxShadow: '0 4px 12px rgba(0,96,100,0.3)',
-              }}
-            >
-              <Microscope size={20} />
-            </Box>
-            <Box sx={{ lineHeight: 1 }}>
-              <Typography
-                variant="caption"
-                sx={{ fontWeight: 700, color: 'primary.main', letterSpacing: '0.06em', textTransform: 'uppercase', display: 'block' }}
-              >
-                AI Endoscopy Suite
-              </Typography>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary', lineHeight: 1.2 }}>
-                Smart Endoscopy
-              </Typography>
-            </Box>
-          </Box>
+            BS
+          </div>
+        </div>
+      </div>
 
-          {/* Nav Items + AI health pill (Phase C5) */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, overflowX: 'auto' }}>
-            <Box sx={{ mr: 1 }}><AiHealthBadge /></Box>
-            {navItems.map(({ href, label, icon: Icon }) => {
-              const isActive = pathname === href;
-              return (
-                <MuiButton
-                  key={href}
-                  component={Link}
-                  href={href}
-                  size="small"
-                  sx={{
-                    textTransform: 'none',
-                    fontSize: '0.875rem',
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 0.75,
-                    borderRadius: '8px',
-                    px: 1.75,
-                    py: 0.875,
-                    minWidth: 0,
-                    transition: 'all 0.2s ease',
-                    color: isActive ? 'primary.main' : 'text.secondary',
-                    backgroundColor: isActive ? 'rgba(0,96,100,0.08)' : 'transparent',
-                    position: 'relative',
-                    '&::after': isActive
-                      ? {
-                          content: '""',
-                          position: 'absolute',
-                          bottom: -1,
-                          left: '50%',
-                          transform: 'translateX(-50%)',
-                          width: '60%',
-                          height: 2,
-                          borderRadius: '2px 2px 0 0',
-                          backgroundColor: 'primary.main',
-                        }
-                      : {},
-                    '&:hover': {
-                      backgroundColor: 'rgba(0,96,100,0.06)',
-                      color: 'primary.dark',
-                    },
-                  }}
-                  startIcon={<Icon size={15} />}
-                >
-                  {label}
-                </MuiButton>
-              );
-            })}
-          </Box>
-        </Toolbar>
-      </Container>
-    </AppBar>
+      {/* Responsive rules — keep the chrome readable on phones without a
+          dedicated mobile component. Three breakpoints, smallest first:
+          - <960px: drop the brand subtitle and the Settings icon
+          - <720px: drop the nav link labels (icons only), shrink the brand
+          - <520px: drop the brand wordmark + avatar; only icons remain
+          Also hides the horizontal scrollbar on the nav strip. */}
+      <style jsx global>{`
+        .nav-links { -ms-overflow-style: none; }
+        .nav-links::-webkit-scrollbar { display: none; }
+
+        @media (max-width: 960px) {
+          .brand-text > span:last-child { display: none !important; }
+        }
+        @media (max-width: 720px) {
+          .nav-link-label { display: none !important; }
+          .nav-link { padding: 8px 10px !important; }
+          .brand-text > span:first-child { font-size: 13px !important; }
+        }
+        @media (max-width: 520px) {
+          .brand-text { display: none !important; }
+          .nav-right > [aria-label='Cài đặt'] { display: none !important; }
+        }
+      `}</style>
+    </header>
   );
 }

@@ -1,0 +1,206 @@
+/* ==========================================================
+   AI Endoscopy Suite — Design tokens
+   Ported from new-theme/endoscopy/shared/tokens.css
+   Only variables and utility classes that don't conflict
+   with Tailwind/shadcn live here. MUI keeps its own theme
+   via lib/theme.ts; primary color matches --teal-600.
+   ========================================================== */
+
+:root {
+  /* ---- Primary (teal — preserved from current brand) ---- */
+  --teal-50:  #E6F2F2;
+  --teal-100: #C6E0E1;
+  --teal-200: #94C5C7;
+  --teal-300: #5FA6A9;
+  --teal-400: #2F888D;
+  --teal-500: #00838F;
+  --teal-600: #006064;
+  --teal-700: #004D50;
+  --teal-800: #003A3D;
+  --teal-900: #00272A;
+
+  /* ---- Neutral (cool, slightly teal-tinted) ---- */
+  --neutral-0:   #FFFFFF;
+  --neutral-50:  #F7FAFA;
+  --neutral-100: #EEF2F2;
+  --neutral-200: #E2EAE9;
+  --neutral-300: #C9D4D3;
+  --neutral-400: #9BA9A8;
+  --neutral-500: #6E7C7B;
+  --neutral-600: #4F5C5B;
+  --neutral-700: #36403F;
+  --neutral-800: #222B2A;
+  --neutral-900: #131A19;
+
+  /* ---- Severity (lesion class — medical convention, locked) ---- */
+  --sev-cancer:        #C44E52;
+  --sev-cancer-bg:     #FBEDED;
+  --sev-cancer-border: #E8B5B7;
+  --sev-inflam:        #DD8452;
+  --sev-inflam-bg:     #FCEFE6;
+  --sev-inflam-border: #F0C4A6;
+  --sev-ulcer:         #55A868;
+  --sev-ulcer-bg:      #ECF5EE;
+  --sev-ulcer-border:  #B6D7BE;
+
+  /* ---- Status (workflow — distinct from severity) ---- */
+  --st-confirmed:  #059669;
+  --st-analyzed:   #0277BD;
+  --st-ignored:    #9AA5B1;
+  --st-detected:   #D97706;
+  --st-processing: #6366F1;
+
+  /* ---- Semantic ---- */
+  --success: #059669;
+  --warning: #D97706;
+  --danger:  #C44E52;
+  --info:    #0277BD;
+
+  /* ---- Surfaces ---- */
+  --bg-app:    #F7FAFA;
+  --bg-paper:  #FFFFFF;
+  --bg-subtle: #F1F5F5;
+  --bg-sunken: #ECF1F1;
+  --border-subtle:  #E2EAE9;
+  --border-default: #D5DEDD;
+  --border-strong:  #A6B3B2;
+
+  /* ---- Workspace surfaces (richer chrome for video tools) ---- */
+  --ws-canvas: #0E1414;
+  --ws-panel:  #FFFFFF;
+  --ws-rail:   #F7FAFA;
+
+  /* ---- Hero gradient (preserved) ---- */
+  --hero-gradient: linear-gradient(135deg, #003A3D 0%, #006064 45%, #00838F 100%);
+
+  /* ---- Radius scale ---- */
+  --r-sm:  4px;
+  --r-md:  8px;
+  --r-lg:  12px;
+  --r-xl:  16px;
+  --r-2xl: 24px;
+  --r-pill: 999px;
+
+  /* ---- Shadow scale ---- */
+  --shadow-sm: 0 1px 2px rgba(13, 27, 42, 0.04), 0 1px 1px rgba(13, 27, 42, 0.03);
+  --shadow-md: 0 2px 12px rgba(13, 27, 42, 0.06);
+  --shadow-lg: 0 8px 24px rgba(13, 27, 42, 0.08), 0 2px 6px rgba(13,27,42,0.04);
+  --shadow-xl: 0 18px 40px rgba(13, 27, 42, 0.12);
+  --shadow-glow-warning: 0 0 0 4px rgba(217, 119, 6, 0.18), 0 8px 24px rgba(217, 119, 6, 0.22);
+  --shadow-glow-danger:  0 0 0 4px rgba(196, 78, 82, 0.18), 0 8px 24px rgba(196, 78, 82, 0.22);
+  --shadow-focus-ring:   0 0 0 3px rgba(0, 131, 143, 0.28);
+
+  /* ---- Spacing (4px grid) ---- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* ---- Type ---- */
+  --font-sans-tokens: "Inter", "Inter Vietnamese", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono-tokens: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /* Vietnamese needs taller line-height so dấu don't clip */
+  --lh-tight:  1.30;
+  --lh-snug:   1.45;
+  --lh-normal: 1.6;
+  --lh-loose:  1.75;
+
+  --t-display:  44px;
+  --t-h1:       32px;
+  --t-h2:       24px;
+  --t-h3:       18px;
+  --t-body:     14px;
+  --t-body-lg:  16px;
+  --t-caption:  12px;
+
+  /* ---- Motion ---- */
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 150ms;
+  --dur-base: 250ms;
+  --dur-slow: 400ms;
+}
+
+/* ==========================================================
+   Reusable atoms — namespaced with `theme-` prefix so they
+   don't fight Tailwind or shadcn classes. Use sparingly:
+   prefer MUI sx={{ ... }} with var(--token) for new code.
+   ========================================================== */
+
+.theme-h-display { font-size: var(--t-display); font-weight: 700; line-height: var(--lh-tight); letter-spacing: -0.02em; }
+.theme-h-h1      { font-size: var(--t-h1);      font-weight: 700; line-height: var(--lh-tight); letter-spacing: -0.015em; }
+.theme-h-h2      { font-size: var(--t-h2);      font-weight: 650; line-height: var(--lh-snug);  letter-spacing: -0.01em; }
+.theme-h-h3      { font-size: var(--t-h3);      font-weight: 600; line-height: var(--lh-snug); }
+.theme-eyebrow {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--neutral-500);
+}
+.theme-mono { font-family: var(--font-mono-tokens); font-size: 12px; }
+
+/* Chips — severity + workflow-status */
+.theme-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: var(--r-pill);
+  border: 1px solid transparent;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.theme-chip--cancer { background: var(--sev-cancer-bg); color: var(--sev-cancer); border-color: var(--sev-cancer-border); }
+.theme-chip--inflam { background: var(--sev-inflam-bg); color: var(--sev-inflam); border-color: var(--sev-inflam-border); }
+.theme-chip--ulcer  { background: var(--sev-ulcer-bg);  color: var(--sev-ulcer);  border-color: var(--sev-ulcer-border); }
+.theme-chip--confirmed { background: rgba(5,150,105,0.10); color: var(--st-confirmed); border-color: rgba(5,150,105,0.25); }
+.theme-chip--analyzed  { background: rgba(2,119,189,0.10); color: var(--st-analyzed);  border-color: rgba(2,119,189,0.25); }
+.theme-chip--ignored   { background: var(--neutral-100);   color: var(--neutral-500);  border-color: var(--border-default); }
+.theme-chip--detected  { background: rgba(217,119,6,0.10); color: var(--st-detected);  border-color: rgba(217,119,6,0.25); }
+
+/* Severity left-border accent (cards / list items) */
+.theme-sev-edge {
+  position: relative;
+  padding-left: 14px;
+}
+.theme-sev-edge::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 3px;
+  background: var(--neutral-300);
+}
+.theme-sev-edge--cancer::before { background: var(--sev-cancer); }
+.theme-sev-edge--inflam::before { background: var(--sev-inflam); }
+.theme-sev-edge--ulcer::before  { background: var(--sev-ulcer); }
+
+/* Striped placeholder for missing imagery */
+.theme-img-placeholder {
+  background:
+    repeating-linear-gradient(135deg, #DDE6E5 0 12px, #ECF1F1 12px 24px);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--neutral-500);
+  font-family: var(--font-mono-tokens); font-size: 12px;
+  border-radius: var(--r-md);
+}
+
+/* Scrollbar restraint */
+* { scrollbar-width: thin; scrollbar-color: var(--neutral-300) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--neutral-300); border-radius: 8px; }
+
+/* Animations from the design system */
+@keyframes themePulseRing {
+  0%   { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.45); }
+  70%  { box-shadow: 0 0 0 16px rgba(217, 119, 6, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0); }
+}
+@keyframes themeShimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes themeFadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.theme-fade-up { animation: themeFadeUp var(--dur-base) var(--ease-out) both; }
